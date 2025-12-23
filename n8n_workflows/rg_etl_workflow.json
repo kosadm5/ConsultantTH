@@ -1,0 +1,136 @@
+{
+  "name": "RG ETL Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "cronExpression": "0 3 * * *",
+        "timezone": "Asia/Bangkok"
+      },
+      "name": "Daily Cron",
+      "type": "n8n-nodes-base.Cron",
+      "typeVersion": 1,
+      "position": [250, 200]
+    },
+    {
+      "parameters": {
+        "command": "python /app/scraper/rg_scraper.py",
+        "options": {
+          "cwd": "/app/scraper"
+        }
+      },
+      "name": "Run Scraper",
+      "type": "n8n-nodes-base.ExecuteCommand",
+      "typeVersion": 1,
+      "position": [450, 200]
+    },
+    {
+      "parameters": {
+        "command": "python /app/processor/process_doc.py",
+        "options": {
+          "cwd": "/app/processor"
+        }
+      },
+      "name": "Run Processor",
+      "type": "n8n-nodes-base.ExecuteCommand",
+      "typeVersion": 1,
+      "position": [650, 200]
+    },
+    {
+      "parameters": {
+        "command": "python /app/indexer/index_to_qdrant.py",
+        "options": {
+          "cwd": "/app/indexer"
+        }
+      },
+      "name": "Run Indexer",
+      "type": "n8n-nodes-base.ExecuteCommand",
+      "typeVersion": 1,
+      "position": [850, 200]
+    },
+    {
+      "parameters": {
+        "url": "http://backend:8000/health",
+        "method": "GET"
+      },
+      "name": "Health Check API",
+      "type": "n8n-nodes-base.HttpRequest",
+      "typeVersion": 1,
+      "position": [1050, 200]
+    },
+    {
+      "parameters": {
+        "url": "YOUR_SLACK_OR_LINE_WEBHOOK",
+        "method": "POST",
+        "bodyParametersUi": {
+          "parameter": [
+            {
+              "name": "text",
+              "value": "✅ ETL pipeline completed"
+            }
+          ]
+        }
+      },
+      "name": "Notify Done",
+      "type": "n8n-nodes-base.HttpRequest",
+      "typeVersion": 1,
+      "position": [1250, 200]
+    }
+  ],
+  "connections": {
+    "Daily Cron": {
+      "main": [
+        [
+          {
+            "node": "Run Scraper",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Scraper": {
+      "main": [
+        [
+          {
+            "node": "Run Processor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Processor": {
+      "main": [
+        [
+          {
+            "node": "Run Indexer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Indexer": {
+      "main": [
+        [
+          {
+            "node": "Health Check API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Health Check API": {
+      "main": [
+        [
+          {
+            "node": "Notify Done",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

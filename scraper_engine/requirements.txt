@@ -1,0 +1,11 @@
+playwright
+aiohttp
+beautifulsoup4
+pydantic
+qdrant-client
+python-dotenv
+tqdm
+sentence-transformers
+numpy
+scipy
+requests

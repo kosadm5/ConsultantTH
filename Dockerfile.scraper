@@ -1,0 +1,17 @@
+FROM mcr.microsoft.com/playwright/python:v1.46.0-jammy
+
+WORKDIR /app
+
+# upgrade pip first
+RUN pip install --upgrade pip
+
+COPY scraper_engine/requirements.txt .
+
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY scraper_engine /app/scraper_engine
+
+# ⬇️ ОБЯЗАТЕЛЬНО — установка браузеров Playwright
+RUN playwright install --with-deps chromium
+
+CMD ["python", "-m", "scraper_engine.runner"]

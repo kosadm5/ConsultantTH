@@ -1,0 +1,141 @@
+services:
+  thai-qdrant:
+    image: qdrant/qdrant:latest
+    container_name: thai-qdrant
+    restart: unless-stopped
+    ports:
+      - "6433:6333"
+    volumes:
+      - thai_qdrant_storage:/qdrant/storage
+    networks:
+      - consultant-network
+      
+  thai-ollama:
+    image: ollama/ollama:latest
+    container_name: thai-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./ollama_data:/root/.ollama
+    restart: unless-stopped
+    networks:
+      - consultant-network
+
+  thai-redis:
+    image: redis:alpine
+    container_name: thai-redis
+    restart: unless-stopped
+    networks:
+      - consultant-network
+
+  thai-postgres:
+    image: postgres:15.15
+    container_name: thai-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: thailaw
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: Privet2020!
+    volumes:
+      - thai_pgdata:/var/lib/postgresql/data
+    networks:
+      - consultant-network
+
+  thai-n8n:
+    image: n8nio/n8n:latest
+    container_name: thai-n8n
+    restart: unless-stopped
+    ports:
+      - "5679:5678"
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=admin
+      - N8N_BASIC_AUTH_PASSWORD=Privet2020!
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=thai-postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=thailaw
+      - DB_POSTGRESDB_USER=admin
+      - DB_POSTGRESDB_PASSWORD=Privet2020!
+    volumes:
+      - thai_n8n_data:/home/node/.n8n
+    depends_on:
+      - thai-postgres
+    networks:
+      - consultant-network
+
+  thai-scraper:
+    build:
+      context: .
+      dockerfile: Dockerfile.scraper
+    container_name: thai-scraper
+    restart: "no"
+    volumes:
+      - ./data/raw:/data/raw
+      - ./data/processed:/data/processed
+      - ./scraper_engine:/app/scraper_engine
+    environment:
+      - OUTPUT_DIR=/data/raw
+      - PROCESSED_DIR=/data/processed
+      - COOKIE_STORE_FILE=/data/cookies/cookies.json
+      - SCRAPE_DELAY=4.0
+    networks:
+      - consultant-network
+
+  thai-processor:
+    build:
+      context: ./processor
+      dockerfile: Dockerfile
+    container_name: thai-processor
+    environment:
+      - RAW_DIR=/app/data/raw
+      - PROCESSED_DIR=/app/data/processed
+    volumes:
+      - ./data/raw:/app/data/raw
+      - ./data/processed:/app/data/processed
+    networks:
+      - consultant-network
+
+  thai-indexer:
+    build:
+      context: ./indexer
+      dockerfile: Dockerfile
+    container_name: thai-indexer
+    environment:
+      - PROCESSED_DIR=/app/data/processed
+      - QDRANT_HOST=thai-qdrant
+      - QDRANT_PORT=6333
+      - QDRANT_COLLECTION=thai_law
+    volumes:
+      - ./data/processed:/app/data/processed
+    depends_on:
+      - thai-qdrant
+    ports:
+      - "8001:8001"   # HTTP-сервис индексатора
+    networks:
+      - consultant-network
+
+  thai-backend:
+    build: ./backend
+    container_name: thai-backend
+    restart: unless-stopped
+    ports:
+      - "8100:8000"
+    environment:
+      - QDRANT_URL=http://thai-qdrant:6333
+      - OLLAMA_URL=http://thai-ollama:11434
+      - REDIS_URL=redis://thai-redis:6379/0
+      - QDRANT_COLLECTION=thai_law
+    depends_on:
+      - thai-qdrant
+    networks:
+      - consultant-network
+
+volumes:
+  thai_qdrant_storage:
+  thai_pgdata:
+  thai_n8n_data:
+  
+networks:
+  consultant-network:
+    driver: bridge
