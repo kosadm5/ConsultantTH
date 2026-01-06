@@ -1,0 +1,90 @@
+{
+  "name": "Thai Law AI Bot",
+  "nodes": [
+    {
+      "parameters": {},
+      "name": "Start",
+      "type": "n8n-nodes-base.start",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "path": "law-bot",
+        "options": {}
+      },
+      "name": "LINE Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [500, 300],
+      "webhookId": "b1a11707-1725-4c07-b352-730623f99092"
+    },
+    {
+      "parameters": {
+        "url": "http://thai-backend:8000/query",
+        "options": {},
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "query",
+              "value": "={{$json.events[0].message.text}}"
+            }
+          ]
+        },
+        "json": true
+      },
+      "name": "Query RAG API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [750, 300]
+    },
+    {
+      "parameters": {
+        "operation": "reply",
+        "replyToken": "={{$json.events[0].replyToken}}",
+        "messages": {
+          "messages": [
+            {
+              "type": "text",
+              "text": "={{ $json.text }}\n\n---Источники---\n{{ $json.sources.map(s => s.url).join('\\n') }}"
+            }
+          ]
+        }
+      },
+      "name": "Send LINE Reply",
+      "type": "n8n-nodes-base.line",
+      "typeVersion": 1,
+      "position": [1000, 300],
+      "credentials": {
+        "lineApi": {
+          "id": "",
+          "name": ""
+        }
+      }
+    }
+  ],
+  "connections": {
+    "LINE Webhook": {
+      "main": [
+        [
+          {
+            "node": "Query RAG API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query RAG API": {
+      "main": [
+        [
+          {
+            "node": "Send LINE Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

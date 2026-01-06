@@ -22,8 +22,8 @@ async def webhook(req: Request, x_line_signature: str = Header(None)):
             user_text = ev["message"]["text"]
             reply_token = ev["replyToken"]
             # отправляем запрос в /query
-            r = requests.post(f"{BACKEND_URL}/query", json={"query": user_text})
+            r = requests.post(f"{BACKEND_URL}/query", json={"query": user_text}, timeout=120)
             data = r.json()
-            answer = data.get("answer", {}).get("text", "")
+            answer = data.get("text", "ขออภัย เกิดข้อผิดพลาดในการประมวลผล")
             line_api.reply_message(reply_token, TextSendMessage(text=answer))
     return "OK"

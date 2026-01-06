@@ -1,0 +1,182 @@
+{
+    "name": "Thai Law ETL Pipeline",
+    "nodes": [
+        {
+            "parameters": {
+                "rule": {
+                    "interval": [
+                        {
+                            "field": "cronExpression",
+                            "expression": "0 3 * * *"
+                        }
+                    ]
+                }
+            },
+            "id": "cron-trigger",
+            "name": "Daily 3AM Trigger",
+            "type": "n8n-nodes-base.scheduleTrigger",
+            "typeVersion": 1.2,
+            "position": [
+                240,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "method": "POST",
+                "url": "http://thai-backend:8000/admin/scrape",
+                "options": {
+                    "timeout": 600000
+                }
+            },
+            "id": "run-scraper",
+            "name": "1. Run Scraper",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4.2,
+            "position": [
+                460,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "method": "POST",
+                "url": "http://thai-processor:8000/process",
+                "options": {
+                    "timeout": 600000
+                }
+            },
+            "id": "run-processor",
+            "name": "2. Run Processor",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4.2,
+            "position": [
+                680,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "method": "POST",
+                "url": "http://thai-indexer:8001/index",
+                "sendBody": true,
+                "bodyParameters": {
+                    "parameters": []
+                },
+                "options": {
+                    "timeout": 600000
+                }
+            },
+            "id": "run-indexer",
+            "name": "3. Run Indexer",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4.2,
+            "position": [
+                900,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "method": "GET",
+                "url": "http://thai-backend:8000/health",
+                "options": {}
+            },
+            "id": "health-check",
+            "name": "4. Health Check",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4.2,
+            "position": [
+                1120,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "assignments": {
+                    "assignments": [
+                        {
+                            "id": "result",
+                            "name": "result",
+                            "value": "={{ 'ETL completed at ' + $now.toISO() + '. Indexed: ' + $json.indexed_points + ' points' }}",
+                            "type": "string"
+                        }
+                    ]
+                },
+                "options": {}
+            },
+            "id": "set-result",
+            "name": "5. Set Result",
+            "type": "n8n-nodes-base.set",
+            "typeVersion": 3.4,
+            "position": [
+                1340,
+                300
+            ]
+        }
+    ],
+    "connections": {
+        "Daily 3AM Trigger": {
+            "main": [
+                [
+                    {
+                        "node": "1. Run Scraper",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "1. Run Scraper": {
+            "main": [
+                [
+                    {
+                        "node": "2. Run Processor",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "2. Run Processor": {
+            "main": [
+                [
+                    {
+                        "node": "3. Run Indexer",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "3. Run Indexer": {
+            "main": [
+                [
+                    {
+                        "node": "4. Health Check",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "4. Health Check": {
+            "main": [
+                [
+                    {
+                        "node": "5. Set Result",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        }
+    },
+    "pinData": {},
+    "settings": {
+        "executionOrder": "v1"
+    },
+    "staticData": null,
+    "tags": [],
+    "triggerCount": 1
+}

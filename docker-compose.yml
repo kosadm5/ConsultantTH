@@ -9,7 +9,7 @@ services:
       - thai_qdrant_storage:/qdrant/storage
     networks:
       - consultant-network
-      
+
   thai-ollama:
     image: ollama/ollama:latest
     container_name: thai-ollama
@@ -57,6 +57,7 @@ services:
       - DB_POSTGRESDB_DATABASE=thailaw
       - DB_POSTGRESDB_USER=admin
       - DB_POSTGRESDB_PASSWORD=Privet2020!
+      - N8N_SECURE_COOKIE=false
     volumes:
       - thai_n8n_data:/home/node/.n8n
     depends_on:
@@ -111,7 +112,7 @@ services:
     depends_on:
       - thai-qdrant
     ports:
-      - "8001:8001"   # HTTP-сервис индексатора
+      - "8001:8001" # HTTP-сервис индексатора
     networks:
       - consultant-network
 
@@ -126,8 +127,14 @@ services:
       - OLLAMA_URL=http://thai-ollama:11434
       - REDIS_URL=redis://thai-redis:6379/0
       - QDRANT_COLLECTION=thai_law
+      - BACKEND_URL=http://thai-backend:8000
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - LINE_CHANNEL_TOKEN=${LINE_CHANNEL_TOKEN}
+      - LINE_CHANNEL_SECRET=${LINE_CHANNEL_SECRET}
+      - DEFAULT_LLM_MODEL=qwen2.5:1.5b
     depends_on:
       - thai-qdrant
+      - thai-ollama
     networks:
       - consultant-network
 
@@ -135,7 +142,8 @@ volumes:
   thai_qdrant_storage:
   thai_pgdata:
   thai_n8n_data:
-  
+
+
 networks:
   consultant-network:
     driver: bridge

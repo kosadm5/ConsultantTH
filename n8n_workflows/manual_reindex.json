@@ -1,0 +1,89 @@
+{
+    "name": "Manual Reindex Trigger",
+    "nodes": [
+        {
+            "parameters": {
+                "httpMethod": "POST",
+                "path": "reindex",
+                "responseMode": "responseNode",
+                "options": {}
+            },
+            "id": "webhook-trigger",
+            "name": "Reindex Webhook",
+            "type": "n8n-nodes-base.webhook",
+            "typeVersion": 2,
+            "position": [
+                240,
+                300
+            ],
+            "webhookId": "reindex-trigger"
+        },
+        {
+            "parameters": {
+                "method": "POST",
+                "url": "http://thai-indexer:8001/index",
+                "sendBody": true,
+                "bodyParameters": {
+                    "parameters": []
+                },
+                "options": {
+                    "timeout": 300000
+                }
+            },
+            "id": "call-indexer",
+            "name": "Call Indexer",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4.2,
+            "position": [
+                460,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "respondWith": "json",
+                "responseBody": "={{ { \"status\": \"success\", \"indexed_points\": $json.indexed_points, \"timestamp\": $now.toISO() } }}",
+                "options": {}
+            },
+            "id": "respond",
+            "name": "Send Response",
+            "type": "n8n-nodes-base.respondToWebhook",
+            "typeVersion": 1.1,
+            "position": [
+                680,
+                300
+            ]
+        }
+    ],
+    "connections": {
+        "Reindex Webhook": {
+            "main": [
+                [
+                    {
+                        "node": "Call Indexer",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Call Indexer": {
+            "main": [
+                [
+                    {
+                        "node": "Send Response",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        }
+    },
+    "pinData": {},
+    "settings": {
+        "executionOrder": "v1"
+    },
+    "staticData": null,
+    "tags": [],
+    "triggerCount": 1
+}

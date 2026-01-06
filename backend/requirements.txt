@@ -1,6 +1,9 @@
 fastapi
 uvicorn[standard]
-qdrant-client
+redis
+qdrant-client~=1.7.0
 requests
+httpx
 sentence-transformers
 line-bot-sdk
+ollama
