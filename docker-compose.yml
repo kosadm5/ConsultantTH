@@ -1,6 +1,6 @@
 services:
   thai-qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:v1.19.1
     container_name: thai-qdrant
     restart: unless-stopped
     ports:
@@ -10,58 +10,40 @@ services:
     networks:
       - consultant-network
 
-  thai-ollama:
-    image: ollama/ollama:latest
-    container_name: thai-ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - ./ollama_data:/root/.ollama
-    restart: unless-stopped
-    networks:
-      - consultant-network
-
   thai-redis:
-    image: redis:alpine
+    image: redis:8.10.0-alpine
     container_name: thai-redis
     restart: unless-stopped
+    ports:
+      - "6380:6379"
+    volumes:
+      - thai_redis_data:/data
     networks:
       - consultant-network
 
   thai-postgres:
-    image: postgres:15.15
+    image: pgvector/pgvector:pg18
     container_name: thai-postgres
     restart: unless-stopped
     environment:
       POSTGRES_DB: thailaw
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: Privet2020!
+    ports:
+      - "5433:5432"
     volumes:
-      - thai_pgdata:/var/lib/postgresql/data
+      - thai_pgdata:/var/lib/postgresql
     networks:
       - consultant-network
 
-  thai-n8n:
-    image: n8nio/n8n:latest
-    container_name: thai-n8n
-    restart: unless-stopped
+  thai-ollama:
+    image: ollama/ollama:latest
+    container_name: thai-ollama
     ports:
-      - "5679:5678"
-    environment:
-      - N8N_BASIC_AUTH_ACTIVE=true
-      - N8N_BASIC_AUTH_USER=admin
-      - N8N_BASIC_AUTH_PASSWORD=Privet2020!
-      - DB_TYPE=postgresdb
-      - DB_POSTGRESDB_HOST=thai-postgres
-      - DB_POSTGRESDB_PORT=5432
-      - DB_POSTGRESDB_DATABASE=thailaw
-      - DB_POSTGRESDB_USER=admin
-      - DB_POSTGRESDB_PASSWORD=Privet2020!
-      - N8N_SECURE_COOKIE=false
+      - "11435:11434"
     volumes:
-      - thai_n8n_data:/home/node/.n8n
-    depends_on:
-      - thai-postgres
+      - ./ollama_data:/root/.ollama
+    restart: unless-stopped
     networks:
       - consultant-network
 
@@ -71,15 +53,18 @@ services:
       dockerfile: Dockerfile.scraper
     container_name: thai-scraper
     restart: "no"
+    shm_size: "2gb"
     volumes:
       - ./data/raw:/data/raw
       - ./data/processed:/data/processed
       - ./scraper_engine:/app/scraper_engine
+      - C:/consul_stage/thai_cache:/cache
     environment:
       - OUTPUT_DIR=/data/raw
       - PROCESSED_DIR=/data/processed
+      - CACHE_DIR=/cache
       - COOKIE_STORE_FILE=/data/cookies/cookies.json
-      - SCRAPE_DELAY=4.0
+      - SCRAPE_DELAY=2.0
     networks:
       - consultant-network
 
@@ -88,12 +73,15 @@ services:
       context: ./processor
       dockerfile: Dockerfile
     container_name: thai-processor
+    restart: "no"
     environment:
       - RAW_DIR=/app/data/raw
       - PROCESSED_DIR=/app/data/processed
+      - CACHE_DIR=/cache
     volumes:
       - ./data/raw:/app/data/raw
       - ./data/processed:/app/data/processed
+      - C:/consul_stage/thai_cache:/cache
     networks:
       - consultant-network
 
@@ -102,17 +90,23 @@ services:
       context: ./indexer
       dockerfile: Dockerfile
     container_name: thai-indexer
+    restart: unless-stopped
     environment:
       - PROCESSED_DIR=/app/data/processed
+      - CACHE_DIR=/cache
       - QDRANT_HOST=thai-qdrant
       - QDRANT_PORT=6333
       - QDRANT_COLLECTION=thai_law
+      - POSTGRES_URL=postgresql://admin:Privet2020!@thai-postgres:5432/thailaw
+      - EMBED_MODEL=VISAI-AI/nitibench-ccl-human-finetuned-bge-m3
     volumes:
       - ./data/processed:/app/data/processed
+      - C:/consul_stage/thai_cache:/cache
     depends_on:
       - thai-qdrant
+      - thai-postgres
     ports:
-      - "8001:8001" # HTTP-сервис индексатора
+      - "8101:8001"
     networks:
       - consultant-network
 
@@ -124,25 +118,27 @@ services:
       - "8100:8000"
     environment:
       - QDRANT_URL=http://thai-qdrant:6333
-      - OLLAMA_URL=http://thai-ollama:11434
+      - POSTGRES_URL=postgresql://admin:Privet2020!@thai-postgres:5432/thailaw
       - REDIS_URL=redis://thai-redis:6379/0
       - QDRANT_COLLECTION=thai_law
       - BACKEND_URL=http://thai-backend:8000
+      - DEFAULT_LANG=en
+      - SUPPORTED_LANGS=en,th,ru,zh
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - LINE_CHANNEL_TOKEN=${LINE_CHANNEL_TOKEN}
       - LINE_CHANNEL_SECRET=${LINE_CHANNEL_SECRET}
-      - DEFAULT_LLM_MODEL=qwen2.5:1.5b
+      - EMBED_MODEL=VISAI-AI/nitibench-ccl-human-finetuned-bge-m3
     depends_on:
       - thai-qdrant
-      - thai-ollama
+      - thai-postgres
+      - thai-redis
     networks:
       - consultant-network
 
 volumes:
   thai_qdrant_storage:
   thai_pgdata:
-  thai_n8n_data:
-
+  thai_redis_data:
 
 networks:
   consultant-network:

@@ -1,0 +1,23 @@
+{
+  "Xenova/ms-marco-MiniLM-L-6-v2": {
+    "ndcg_at_5": 0.7087,
+    "mrr": 0.5833,
+    "precision_at_3": 0.5,
+    "latency_ms": 83.56,
+    "load_time_sec": 0.37
+  },
+  "BAAI/bge-reranker-base": {
+    "ndcg_at_5": 0.9799,
+    "mrr": 1.0,
+    "precision_at_3": 0.6667,
+    "latency_ms": 295.08,
+    "load_time_sec": 116.06
+  },
+  "jinaai/jina-reranker-v2-base-multilingual": {
+    "ndcg_at_5": 1.0,
+    "mrr": 1.0,
+    "precision_at_3": 0.6667,
+    "latency_ms": 366.03,
+    "load_time_sec": 62.51
+  }
+}

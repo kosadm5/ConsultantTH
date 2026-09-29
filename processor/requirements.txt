@@ -1,5 +1,7 @@
-pypdf
-pdf2image
-pytesseract
-pythainlp
-beautifulsoup4
+pythainlp==5.3.7
+beautifulsoup4==4.15.0
+pypdf==6.17.0
+pdfplumber==0.11.10
+pdf2image==1.17.0
+pytesseract==0.3.13
+tqdm==4.67.1

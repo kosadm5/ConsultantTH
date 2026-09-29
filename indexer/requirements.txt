@@ -1,4 +1,5 @@
-fastapi
-uvicorn
-sentence-transformers
-qdrant-client
+qdrant-client==1.19.0
+sentence-transformers==6.0.1
+pythainlp==5.3.7
+asyncpg==0.31.0
+tqdm==4.67.1

@@ -1,0 +1,2806 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Consultant+ — Правовой ИИ-советник</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script>
+    (function() {
+      try {
+        if (window.Telegram && window.Telegram.WebApp) {
+          window.Telegram.WebApp.ready();
+          window.Telegram.WebApp.expand();
+        }
+      } catch (e) {
+        console.error("Telegram early init:", e);
+      }
+    })();
+    
+    // ─── V6.0 CALCULATOR & STATUTE LINKING JS ───
+    window.openStatuteModalByKey = async function(key) {
+      haptic('selection');
+      let found = (currentStatutesCache || []).find(s => (s.key && s.key.toLowerCase() === key.toLowerCase()) || (s.id && s.id.toLowerCase() === key.toLowerCase()));
+      if (!found) {
+        try {
+          const resp = await fetch('/api/statute/' + encodeURIComponent(key) + '?lang=' + (currentLang || 'en'));
+          if (resp.ok) {
+            found = await resp.json();
+          }
+        } catch(e) {
+          console.error('Error fetching statute:', e);
+        }
+      }
+      
+      const backdrop = document.getElementById('doc-modal-backdrop');
+      if (found) {
+        activeModalDocument = found;
+        document.getElementById('modal-doc-title').innerText = found.title || 'Official Statutory Provision';
+        document.getElementById('modal-doc-subtitle').innerText = found.section_num || '';
+
+        const bodyEl = document.getElementById('modal-doc-body');
+        let thaiBlock = '';
+        if (found.official_th) {
+          thaiBlock = `
+            <details class="doc-thai-accordion">
+              <summary>🇹🇭 Official Thai Statutory Source (Royal Gazette)</summary>
+              <div class="doc-thai-text">
+                <strong>${escapeHtml(found.official_th)}</strong><br>
+                ${found.official_th_section ? '<em>' + escapeHtml(found.official_th_section) + '</em><br><br>' : ''}
+                ${escapeHtml(found.official_th_text || 'ราชกิจจานุเบกษาแห่งราชอาณาจักรไทย')}
+              </div>
+            </details>
+          `;
+        }
+
+        let krisdikaBlock = '';
+        if (found.krisdika_commentary) {
+          krisdikaBlock = `
+            <div class="doc-section-card" style="border-left: 3px solid var(--lotus);">
+              <h4>🏛️ Council of State Interpretation (Krisdika)</h4>
+              <div>${escapeHtml(found.krisdika_commentary)}</div>
+            </div>
+          `;
+        }
+
+        bodyEl.innerHTML = `
+          <div class="doc-section-card">
+            <h4>💡 Summary & Practical Legal Application</h4>
+            <div>${escapeHtml(found.summary || found.snippet || '')}</div>
+          </div>
+          ${krisdikaBlock}
+          <div class="doc-section-card">
+            <h4>📜 Full Statutory Text (Certified Legal Translation)</h4>
+            <div style="white-space: pre-line; line-height: 1.6;">${escapeHtml(found.full_text || found.snippet || '')}</div>
+          </div>
+          ${thaiBlock}
+        `;
+
+        backdrop.classList.add('open');
+      } else {
+        // Professional missing source state
+        document.getElementById('modal-doc-title').innerText = key || 'Statutory Source Notice';
+        document.getElementById('modal-doc-subtitle').innerText = 'Official Registry Status';
+        document.getElementById('modal-doc-body').innerHTML = `
+          <div class="doc-section-card" style="border-left: 3px solid #e07a5f;">
+            <h4>ℹ️ Primary Full Text Currently Unavailable</h4>
+            <div style="line-height: 1.6; color: var(--text-muted);">
+              The official full text for reference <strong>«${escapeHtml(key)}»</strong> is not directly cataloged as an individual statutory card in the primary database.
+              <br><br>
+              Legal reasoning in the consultation remains strictly grounded in governing primary codes (Revenue Code, Land Code, Civil and Commercial Code, or Condominium Act).
+            </div>
+          </div>
+        `;
+        backdrop.classList.add('open');
+      }
+    };
+
+    function openCalculatorModal() {
+      haptic('medium');
+      const backdrop = document.getElementById('calc-modal-backdrop');
+      if (backdrop) backdrop.classList.add('active');
+      runRealEstateCalc();
+    }
+
+    function closeCalculatorModal(e) {
+      if (e.target.id === 'calc-modal-backdrop') {
+        closeCalculatorModalDirect();
+      }
+    }
+
+    function closeCalculatorModalDirect() {
+      haptic('light');
+      const backdrop = document.getElementById('calc-modal-backdrop');
+      if (backdrop) backdrop.classList.remove('active');
+    }
+
+    function switchCalcTab(tabName) {
+      haptic('selection');
+      const tabs = ['realestate', 'tax', 'severance', 'corporate', 'visa'];
+      tabs.forEach(t => {
+        const pane = document.getElementById('calc-pane-' + t);
+        if (pane) pane.style.display = (t === tabName) ? 'block' : 'none';
+      });
+      document.querySelectorAll('.calc-tab-btn').forEach((btn, idx) => {
+        btn.classList.toggle('active', tabs[idx] === tabName);
+      });
+      if (tabName === 'realestate') runRealEstateCalc();
+      if (tabName === 'tax') runTaxCalc();
+      if (tabName === 'severance') runSeveranceCalc();
+      if (tabName === 'corporate') runCorpCalc();
+      if (tabName === 'visa') runVisaCalc();
+    }
+
+    let lastCalcSummary = "";
+
+    function runRealEstateCalc() {
+      const priceEl = document.getElementById('re-price');
+      if (!priceEl) return;
+      const price = parseFloat(priceEl.value) || 0;
+      const own = document.getElementById('re-ownership').value;
+      const years = parseFloat(document.getElementById('re-years').value) || 1;
+
+      let html = '';
+      if (own === 'FREEHOLD') {
+        const tf = price * 0.02;
+        const sbt = (years < 5) ? price * 0.033 : 0;
+        const stamp = (years >= 5) ? price * 0.005 : 0;
+        const wht = price * 0.02;
+        const total = tf + sbt + stamp + wht;
+        html = `
+          <div class="calc-result-row"><span class="calc-result-label">Сбор за переоформление (Transfer Fee 2%):</span><span class="calc-result-val">${tf.toLocaleString()} THB</span></div>
+          ${sbt > 0 ? '<div class="calc-result-row"><span class="calc-result-label">Спецналог на бизнес (SBT 3.3%):</span><span class="calc-result-val">' + sbt.toLocaleString() + ' THB</span></div>' : ''}
+          ${stamp > 0 ? '<div class="calc-result-row"><span class="calc-result-label">Гербовый сбор (Stamp Duty 0.5%):</span><span class="calc-result-val">' + stamp.toLocaleString() + ' THB</span></div>' : ''}
+          <div class="calc-result-row"><span class="calc-result-label">Удерживаемый налог (Withholding Tax ~2%):</span><span class="calc-result-val">${wht.toLocaleString()} THB</span></div>
+          <div class="calc-result-row calc-result-total"><span class="calc-result-label">Итого налоги сделки в Land Office:</span><span class="calc-result-val">${total.toLocaleString()} THB</span></div>
+          <div class="calc-result-row"><span class="calc-result-label">Обычай рынка (Доля покупателя 50% TF):</span><span class="calc-result-val">${(tf/2).toLocaleString()} THB</span></div>
+          <div style="font-size: 0.78rem; color: var(--gold); margin-top: 8px;">📜 ст. 19 Закона о кондоминиумах: обязательно 100% перевод валюты из-за рубежа (форма FET).</div>
+        `;
+        lastCalcSummary = `Расчет сделки Freehold (${price.toLocaleString()} THB): Итого налоги Land Office = ${total.toLocaleString()} THB. Доля покупателя (50% Transfer Fee) = ${(tf/2).toLocaleString()} THB. Требуется валютная справка FET.`;
+      } else {
+        const reg = price * 0.01;
+        const stamp = price * 0.001;
+        const total = reg + stamp;
+        html = `
+          <div class="calc-result-row"><span class="calc-result-label">Регистрация аренды (Lease Registration 1%):</span><span class="calc-result-val">${reg.toLocaleString()} THB</span></div>
+          <div class="calc-result-row"><span class="calc-result-label">Гербовый сбор (Stamp Duty 0.1%):</span><span class="calc-result-val">${stamp.toLocaleString()} THB</span></div>
+          <div class="calc-result-row calc-result-total"><span class="calc-result-label">Итого налоги Leasehold:</span><span class="calc-result-val">${total.toLocaleString()} THB</span></div>
+          <div style="font-size: 0.78rem; color: var(--lotus); margin-top: 8px;">📜 ст. 538 CCC: максимальный срок регистрации 30 лет. FET не требуется.</div>
+        `;
+        lastCalcSummary = `Расчет Leasehold (${price.toLocaleString()} THB): Сбор 1% + гербовый сбор 0.1% = ${total.toLocaleString()} THB. Срок по ст. 538 CCC: 30 лет.`;
+      }
+      document.getElementById('re-result-box').innerHTML = html;
+    }
+
+    function runTaxCalc() {
+      const amtEl = document.getElementById('tax-amount');
+      if (!amtEl) return;
+      const amt = parseFloat(amtEl.value) || 0;
+      const days = parseInt(document.getElementById('tax-days').value) || 0;
+      const prior = document.getElementById('tax-prior2024').value === 'true';
+      const dta = parseFloat(document.getElementById('tax-dta').value) || 0;
+
+      let html = '';
+      if (days < 180) {
+        html = `
+          <div class="calc-result-row"><span class="calc-result-label">Статус резидентства:</span><span class="calc-result-val" style="color: var(--lotus);">Не резидент (${days} дней &lt; 180)</span></div>
+          <div class="calc-result-row calc-result-total"><span class="calc-result-label">Налог на ввоз дохода:</span><span class="calc-result-val" style="color: var(--lotus);">0 THB (0%)</span></div>
+          <div style="font-size: 0.78rem; color: var(--text-muted); margin-top: 8px;">По ст. 41 абз. 2 Revenue Code нерезиденты не платят налог на ввоз иностранных доходов.</div>
+        `;
+        lastCalcSummary = `Налоговый расчет: ${days} дней в Таиланде (<180 дней). Статус: НЕ налоговый резидент. Налог на ввоз ${amt.toLocaleString()} THB равен 0 THB.`;
+      } else if (prior) {
+        html = `
+          <div class="calc-result-row"><span class="calc-result-label">Статус:</span><span class="calc-result-val">Налоговый резидент (${days} дней)</span></div>
+          <div class="calc-result-row"><span class="calc-result-label">Основание освобождения:</span><span class="calc-result-val" style="color: var(--lotus);">P.162/2566 Grandfathering</span></div>
+          <div class="calc-result-row calc-result-total"><span class="calc-result-label">Итоговый налог:</span><span class="calc-result-val" style="color: var(--lotus);">0 THB (0%)</span></div>
+          <div style="font-size: 0.78rem; color: var(--gold); margin-top: 8px;">Доходы, полученные до 31.12.2023 г., освобождены от налога при ввозе в любые годы.</div>
+        `;
+        lastCalcSummary = `Налоговый расчет: Ввоз исторических сбережений до 2024 года по правилу P.162/2566: налог равен 0 THB независимо от резидентства.`;
+      } else {
+        const brackets = [[150000, 0.0], [150000, 0.05], [200000, 0.10], [250000, 0.15], [250000, 0.20], [1000000, 0.25], [3000000, 0.30], [Infinity, 0.35]];
+        let rem = amt;
+        let pit = 0;
+        for (let b of brackets) {
+          if (rem <= 0) break;
+          let span = Math.min(rem, b[0]);
+          pit += span * b[1];
+          rem -= span;
+        }
+        const finalTax = Math.max(0, pit - dta);
+        const effRate = amt > 0 ? ((finalTax / amt) * 100).toFixed(1) : 0;
+        html = `
+          <div class="calc-result-row"><span class="calc-result-label">Статус:</span><span class="calc-result-val">Налоговый резидент (${days} дней &ge; 180)</span></div>
+          <div class="calc-result-row"><span class="calc-result-label">Подоходный налог PIT (0-35%):</span><span class="calc-result-val">${pit.toLocaleString()} THB</span></div>
+          ${dta > 0 ? '<div class="calc-result-row"><span class="calc-result-label">Зачет налога DTA Tax Credit:</span><span class="calc-result-val">-' + dta.toLocaleString() + ' THB</span></div>' : ''}
+          <div class="calc-result-row calc-result-total"><span class="calc-result-label">К уплате в Revenue Department:</span><span class="calc-result-val">${finalTax.toLocaleString()} THB (${effRate}%)</span></div>
+          <div style="font-size: 0.78rem; color: var(--gold); margin-top: 8px;">Основание: Распоряжение Налогового департамента RD P.161/2566.</div>
+        `;
+        lastCalcSummary = `Налоговый расчет RD P.161: При ввозе ${amt.toLocaleString()} THB налог PIT составляет ${finalTax.toLocaleString()} THB (эффективная ставка ${effRate}%).`;
+      }
+      document.getElementById('tax-result-box').innerHTML = html;
+    }
+
+    function runSeveranceCalc() {
+      const salEl = document.getElementById('sev-salary');
+      if (!salEl) return;
+      const sal = parseFloat(salEl.value) || 0;
+      const tenure = parseFloat(document.getElementById('sev-tenure').value) || 0;
+      let days = 0;
+      if (tenure < 4) days = 0;
+      else if (tenure < 12) days = 30;
+      else if (tenure < 36) days = 90;
+      else if (tenure < 72) days = 180;
+      else if (tenure < 120) days = 240;
+      else if (tenure < 240) days = 300;
+      else days = 400;
+
+      const sevPay = Math.round((sal / 30) * days);
+      const total = sevPay + sal;
+      const html = `
+        <div class="calc-result-row"><span class="calc-result-label">Положенное выходное пособие (ст. 118 LPA):</span><span class="calc-result-val">${days} дней зарплаты</span></div>
+        <div class="calc-result-row"><span class="calc-result-label">Сумма выходного пособия:</span><span class="calc-result-val">${sevPay.toLocaleString()} THB</span></div>
+        <div class="calc-result-row"><span class="calc-result-label">Компенсация за срок уведомления (ст. 17 LPA):</span><span class="calc-result-val">${sal.toLocaleString()} THB</span></div>
+        <div class="calc-result-row calc-result-total"><span class="calc-result-label">Итого обязательная выплата при увольнении:</span><span class="calc-result-val">${total.toLocaleString()} THB</span></div>
+      `;
+      document.getElementById('sev-result-box').innerHTML = html;
+      lastCalcSummary = `Расчет по ст. 118 LPA при окладе ${sal.toLocaleString()} THB: выходное пособие (${days} дней) = ${sevPay.toLocaleString()} THB + оплата за месяц уведомления = ${total.toLocaleString()} THB.`;
+    }
+
+    function runCorpCalc() {
+      const expatsEl = document.getElementById('corp-expats');
+      if (!expatsEl) return;
+      const expats = parseInt(expatsEl.value) || 1;
+      const boi = document.getElementById('corp-boi').value === 'true';
+
+      let html = '';
+      if (boi) {
+        html = `
+          <div class="calc-result-row"><span class="calc-result-label">Иностранное владение:</span><span class="calc-result-val" style="color: var(--lotus);">100% (BOI Certificate)</span></div>
+          <div class="calc-result-row"><span class="calc-result-label">Квота тайских сотрудников:</span><span class="calc-result-val" style="color: var(--lotus);">Освобождение (0 тайцев)</span></div>
+          <div class="calc-result-row calc-result-total"><span class="calc-result-label">Требование к капиталу на Work Permit:</span><span class="calc-result-val" style="color: var(--lotus);">Специальный режим BOI</span></div>
+        `;
+        lastCalcSummary = `Режим BOI для компании: 100% иностранная собственность, освобождение от квоты 4 тайцев на 1 экспата и отмена минимального капитала 2 млн THB.`;
+      } else {
+        const cap = expats * 2000000;
+        const thais = expats * 4;
+        html = `
+          <div class="calc-result-row"><span class="calc-result-label">Минимальный уставный капитал:</span><span class="calc-result-val">${cap.toLocaleString()} THB</span></div>
+          <div class="calc-result-row"><span class="calc-result-label">Минимум тайских сотрудников (квота 4:1):</span><span class="calc-result-val">${thais} сотрудников</span></div>
+          <div class="calc-result-row calc-result-total"><span class="calc-result-label">Work Permit квота:</span><span class="calc-result-val">${expats} экспат(ов)</span></div>
+          <div style="font-size: 0.78rem; color: var(--gold); margin-top: 8px;">Обязательны отчисления в Social Security за каждого сотрудника минимум 3 месяца.</div>
+        `;
+        lastCalcSummary = `Стандартная тайская компания на ${expats} Work Permit: требуется ${cap.toLocaleString()} THB капитала и минимум ${thais} тайских сотрудников в штате (квота 4:1).`;
+      }
+      document.getElementById('corp-result-box').innerHTML = html;
+    }
+
+    function runVisaCalc() {
+      const budgetEl = document.getElementById('visa-budget');
+      if (!budgetEl) return;
+      const budget = parseFloat(budgetEl.value) || 0;
+      const inc = parseFloat(document.getElementById('visa-income').value) || 0;
+      const workTh = document.getElementById('visa-workth').value === 'true';
+
+      let match = 'DTV';
+      let title = 'Destination Thailand Visa (DTV)';
+      let desc = 'Идеально: 5 лет, пребывание 180+180 дней, сбор 10 000 батов, остаток 500k THB.';
+
+      if (workTh) {
+        match = 'Non-B + Work Permit';
+        title = 'Виза Non-B + Digital Work Permit';
+        desc = 'Единственный способ легально работать на тайском рынке и управлять местным бизнесом.';
+      } else if (inc >= 6666 || budget >= 500000) {
+        match = 'LTR';
+        title = 'Виза LTR (Long-Term Resident)';
+        desc = '10 лет, 0% налог на зарубежный доход, Work Permit без квоты 4 тайцев.';
+      } else if (budget >= 25000) {
+        match = 'Elite';
+        title = 'Thailand Privilege (Elite)';
+        desc = 'Премиальное резидентство от 5 до 20 лет без подтверждения доходов.';
+      }
+
+      const html = `
+        <div class="calc-result-row"><span class="calc-result-label">Рекомендуемая виза:</span><span class="calc-result-val" style="color: var(--gold);">${title}</span></div>
+        <div class="calc-result-row calc-result-total"><span class="calc-result-label">Совместимость с вашим профилем:</span><span class="calc-result-val">98% Match</span></div>
+        <div style="font-size: 0.82rem; color: var(--text-main); margin-top: 8px; line-height: 1.5;">${desc}</div>
+      `;
+      document.getElementById('visa-result-box').innerHTML = html;
+      lastCalcSummary = `Подбор визы: рекомендуемый вариант — ${title} (${desc}).`;
+    }
+
+    function pasteCalcToChat(type) {
+      closeCalculatorModalDirect();
+      const input = document.getElementById('chat-input');
+      input.value = "Проанализируй мои расчеты: " + lastCalcSummary;
+      input.focus();
+      input.classList.add('input-prefilled-pulse');
+      setTimeout(() => input.classList.remove('input-prefilled-pulse'), 1200);
+    }
+
+
+window.addEventListener('DOMContentLoaded', () => {
+      try {
+        if (window.Telegram && window.Telegram.WebApp) {
+          window.Telegram.WebApp.ready();
+          window.Telegram.WebApp.expand();
+        }
+      } catch (e) {}
+      if (window.location.hash === '#calculator') {
+        setTimeout(() => { if (typeof openCalculatorModal === 'function') openCalculatorModal(); }, 300);
+      }
+    });
+    window.addEventListener('hashchange', () => {
+      if (window.location.hash === '#calculator') {
+        if (typeof openCalculatorModal === 'function') openCalculatorModal();
+      }
+    });
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=Sarabun:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #121417;
+      --surface: #191c21;
+      --surface-card: #22262e;
+      --surface-hover: #2a303a;
+      --surface-border: rgba(255, 255, 255, 0.08);
+      --gold: #cba86a;
+      --gold-soft: rgba(203, 168, 106, 0.15);
+      --lotus: #5ba382;
+      --lotus-soft: rgba(91, 163, 130, 0.15);
+      --text-main: #f5f3ed;
+      --text-muted: #9ba3af;
+      --user-bubble: #282f3a;
+      --bot-bubble: #1c2026;
+      --font: 'Plus Jakarta Sans', 'Sarabun', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background-color: var(--bg);
+      background-image: radial-gradient(circle at 50% 0%, #1c2128 0%, var(--bg) 75%);
+      color: var(--text-main);
+      font-family: var(--font);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+
+    /* ─── DRAWER / SIDEBAR ─── */
+    .drawer-backdrop {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.68);
+      backdrop-filter: blur(5px);
+      z-index: 199;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.25s ease;
+    }
+
+    .drawer-backdrop.open {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .drawer {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 320px;
+      max-width: 85vw;
+      height: 100%;
+      background: #16181c;
+      border-right: 1px solid var(--surface-border);
+      box-shadow: 6px 0 28px rgba(0, 0, 0, 0.55);
+      z-index: 200;
+      transform: translateX(-100%);
+      transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+      display: flex;
+      flex-direction: column;
+    }
+
+    .drawer.open {
+      transform: translateX(0);
+    }
+
+    .drawer-header {
+      padding: 1.1rem 1.25rem;
+      border-bottom: 1px solid var(--surface-border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: rgba(20, 22, 26, 0.95);
+    }
+
+    .drawer-title {
+      font-size: 1rem;
+      font-weight: 600;
+      color: var(--gold);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .drawer-close {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-size: 1.3rem;
+      cursor: pointer;
+      padding: 0.2rem 0.5rem;
+      border-radius: 6px;
+    }
+    .drawer-close:hover { color: var(--text-main); }
+
+    .drawer-actions {
+      padding: 0.9rem 1.25rem;
+      border-bottom: 1px solid var(--surface-border);
+    }
+
+    .btn-new-dialog {
+      width: 100%;
+      background: linear-gradient(135deg, #dfbd7e, #cba86a);
+      border: none;
+      border-radius: 12px;
+      color: #141618;
+      font-weight: 600;
+      font-size: 0.88rem;
+      padding: 0.72rem 1rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      box-shadow: 0 2px 10px rgba(203, 168, 106, 0.25);
+      transition: all 0.18s;
+    }
+
+    .btn-new-dialog:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 14px rgba(203, 168, 106, 0.35);
+    }
+
+    .drawer-section-title {
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-muted);
+      padding: 0.85rem 1.25rem 0.4rem;
+      font-weight: 600;
+    }
+
+    .session-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0.4rem 0.75rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+
+    .session-item {
+      padding: 0.75rem 0.9rem;
+      border-radius: 10px;
+      background: transparent;
+      border: 1px solid transparent;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      gap: 0.3rem;
+      transition: all 0.18s ease;
+      position: relative;
+    }
+
+    .session-item:hover {
+      background: var(--surface);
+      border-color: var(--surface-border);
+    }
+
+    .session-item.active {
+      background: var(--surface-card);
+      border-color: rgba(203, 168, 106, 0.35);
+    }
+
+    .session-item-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+    }
+
+    .session-item-title {
+      font-size: 0.86rem;
+      font-weight: 500;
+      color: var(--text-main);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      flex: 1;
+    }
+
+    .session-badge {
+      font-size: 0.68rem;
+      padding: 0.15rem 0.45rem;
+      border-radius: 6px;
+      font-weight: 600;
+      background: rgba(91, 163, 130, 0.15);
+      color: var(--lotus);
+      white-space: nowrap;
+    }
+
+    .session-badge.condo { background: rgba(203, 168, 106, 0.15); color: var(--gold); }
+    .session-badge.tax { background: rgba(87, 166, 222, 0.15); color: #57a6de; }
+    .session-badge.labor { background: rgba(222, 126, 87, 0.15); color: #de7e57; }
+    .session-badge.visa { background: rgba(162, 106, 222, 0.15); color: #b782f2; }
+
+    .session-item-preview {
+      font-size: 0.74rem;
+      color: var(--text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .session-delete-btn {
+      position: absolute;
+      right: 0.5rem;
+      bottom: 0.5rem;
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-size: 0.75rem;
+      cursor: pointer;
+      opacity: 0;
+      transition: opacity 0.15s, color 0.15s;
+    }
+    .session-item:hover .session-delete-btn { opacity: 0.7; }
+    .session-delete-btn:hover { color: #e07a5f !important; opacity: 1 !important; }
+
+    /* ─── HEADER ─── */
+    header {
+      border-bottom: 1px solid var(--surface-border);
+      background: rgba(18, 20, 23, 0.95);
+      backdrop-filter: blur(16px);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .header-content {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 0.75rem 1rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+    }
+
+    .btn-drawer-toggle {
+      width: 36px;
+      height: 36px;
+      background: var(--surface);
+      border: 1px solid var(--surface-border);
+      border-radius: 10px;
+      color: var(--text-main);
+      font-size: 1.15rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .btn-drawer-toggle:hover { background: var(--surface-card); }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.65rem;
+    }
+
+    .brand-icon {
+      width: 36px;
+      height: 36px;
+      background: linear-gradient(135deg, #2b323c, #1a1d22);
+      border: 1px solid rgba(203, 168, 106, 0.45);
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.1rem;
+    }
+
+    .brand-info h1 {
+      font-size: 1rem;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      color: var(--text-main);
+    }
+
+    .brand-info h1 span {
+      color: var(--gold);
+      font-weight: 700;
+    }
+
+    .brand-info p {
+      font-size: 0.72rem;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--lotus);
+      display: inline-block;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .btn-profile-badge {
+      background: var(--surface);
+      border: 1px solid var(--surface-border);
+      color: var(--text-main);
+      font-size: 0.76rem;
+      font-weight: 500;
+      padding: 0.35rem 0.7rem;
+      border-radius: 14px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      transition: all 0.18s;
+    }
+    .btn-profile-badge:hover {
+      background: var(--surface-card);
+      border-color: rgba(203, 168, 106, 0.3);
+    }
+
+    .lang-switcher {
+      display: flex;
+      background: var(--surface);
+      padding: 0.15rem;
+      border-radius: 16px;
+      border: 1px solid var(--surface-border);
+    }
+
+    .lang-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      padding: 0.25rem 0.55rem;
+      font-size: 0.72rem;
+      font-weight: 600;
+      border-radius: 12px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .lang-btn.active {
+      background: var(--gold);
+      color: #141618;
+      box-shadow: 0 1px 6px rgba(203, 168, 106, 0.3);
+    }
+
+    /* ─── CHAT MAIN AREA ─── */
+    .chat-container {
+      flex: 1;
+      max-width: 860px;
+      width: 100%;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      height: calc(100vh - 60px);
+    }
+
+    .messages-area {
+      flex: 1;
+      overflow-y: auto;
+      padding: 1.25rem 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.15rem;
+      scroll-behavior: smooth;
+    }
+
+    /* ─── WELCOME CARD ─── */
+    .welcome-card {
+      background: var(--surface);
+      border: 1px solid var(--surface-border);
+      border-radius: 16px;
+      padding: 1.35rem;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+    }
+
+    .welcome-header {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .welcome-header h2 {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: var(--gold);
+    }
+
+    .welcome-desc {
+      font-size: 0.86rem;
+      line-height: 1.5;
+      color: var(--text-muted);
+      margin-bottom: 1.1rem;
+    }
+
+    .topics-title {
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.65rem;
+    }
+
+    .quick-chips {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 0.55rem;
+    }
+
+    .quick-chip {
+      background: var(--surface-card);
+      border: 1px solid var(--surface-border);
+      border-radius: 12px;
+      padding: 0.75rem 0.9rem;
+      color: var(--text-main);
+      font-size: 0.82rem;
+      font-weight: 500;
+      cursor: pointer;
+      text-align: left;
+      display: flex;
+      align-items: center;
+      gap: 0.65rem;
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .quick-chip:hover {
+      background: var(--surface-hover);
+      border-color: rgba(203, 168, 106, 0.35);
+      transform: translateY(-1px);
+    }
+
+    /* ─── MESSAGES & BUBBLES ─── */
+    .message {
+      display: flex;
+      flex-direction: column;
+      max-width: 86%;
+      animation: fadeIn 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .message.user {
+      align-self: flex-end;
+    }
+
+    .message.user .bubble {
+      background: var(--user-bubble);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 16px 16px 4px 16px;
+      color: var(--text-main);
+    }
+
+    .message.bot {
+      align-self: flex-start;
+      max-width: 94%;
+    }
+
+    .message.bot .bubble {
+      background: var(--bot-bubble);
+      border: 1px solid var(--surface-border);
+      border-radius: 16px 16px 16px 4px;
+      color: var(--text-main);
+      box-shadow: 0 4px 16px rgba(0,0,0,0.18);
+    }
+
+    .bubble {
+      padding: 1rem 1.2rem;
+      font-size: 0.9rem;
+      line-height: 1.55;
+    }
+
+    .bubble h3 {
+      font-size: 1.05rem;
+      color: var(--gold);
+      margin: 0.3rem 0 0.6rem 0;
+      font-weight: 600;
+    }
+
+    .bubble h4 {
+      font-size: 0.95rem;
+      color: var(--text-main);
+      margin: 0.75rem 0 0.35rem 0;
+      font-weight: 600;
+      border-left: 3px solid var(--gold);
+      padding-left: 0.5rem;
+    }
+
+    /* ─── CROSS-DIALOG MEMORY / RELATED CASE ALERT ─── */
+    .related-case-badge {
+      margin-bottom: 0.85rem;
+      background: linear-gradient(135deg, rgba(203, 168, 106, 0.12), rgba(91, 163, 130, 0.12));
+      border: 1px solid rgba(203, 168, 106, 0.35);
+      border-radius: 12px;
+      padding: 0.65rem 0.85rem;
+      display: flex;
+      align-items: flex-start;
+      gap: 0.55rem;
+      font-size: 0.82rem;
+      line-height: 1.4;
+      color: var(--gold);
+    }
+
+    .related-case-icon { font-size: 1.1rem; flex-shrink: 0; margin-top: 1px; }
+    .related-case-content { flex: 1; }
+    .related-case-link {
+      display: inline-block;
+      margin-top: 0.25rem;
+      font-weight: 600;
+      color: var(--lotus);
+      text-decoration: underline;
+      cursor: pointer;
+    }
+
+    /* ─── INTERACTIVE STATUTE ACTION CARDS (REPLACES LONG RAW TEXT) ─── */
+    .statute-action-box {
+      margin-top: 0.95rem;
+      padding-top: 0.85rem;
+      border-top: 1px solid var(--surface-border);
+    }
+
+    .statute-action-header {
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: var(--gold);
+      margin-bottom: 0.5rem;
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+
+    .statute-cards-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .statute-card-btn {
+      background: var(--surface-card);
+      border: 1px solid rgba(203, 168, 106, 0.3);
+      border-radius: 12px;
+      padding: 0.75rem 0.95rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+      text-align: left;
+    }
+
+    .statute-card-btn:hover {
+      background: rgba(203, 168, 106, 0.12);
+      border-color: var(--gold);
+      transform: translateX(3px);
+    }
+
+    .statute-card-info {
+      flex: 1;
+    }
+
+    .statute-card-title {
+      font-size: 0.86rem;
+      font-weight: 600;
+      color: var(--gold);
+      margin-bottom: 0.2rem;
+    }
+
+    .statute-card-desc {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      line-height: 1.35;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    .statute-card-action-tag {
+      background: rgba(203, 168, 106, 0.18);
+      color: var(--gold);
+      font-size: 0.72rem;
+      font-weight: 600;
+      padding: 0.25rem 0.55rem;
+      border-radius: 8px;
+      white-space: nowrap;
+      display: flex;
+      align-items: center;
+      gap: 0.2rem;
+    }
+
+    .precedent-card-btn {
+      background: var(--surface-card);
+      border: 1px solid rgba(91, 163, 130, 0.3);
+      border-radius: 12px;
+      padding: 0.75rem 0.95rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+      text-align: left;
+      margin-top: 0.45rem;
+    }
+
+    .precedent-card-btn:hover {
+      background: rgba(91, 163, 130, 0.12);
+      border-color: var(--lotus);
+      transform: translateX(3px);
+    }
+
+    .precedent-card-title {
+      font-size: 0.86rem;
+      font-weight: 600;
+      color: var(--lotus);
+      margin-bottom: 0.2rem;
+    }
+
+    /* ─── PROACTIVE CLARIFICATIONS ─── */
+    .clarifications-section {
+      margin-top: 0.95rem;
+      padding-top: 0.85rem;
+      border-top: 1px solid var(--surface-border);
+    }
+
+    .clarifications-title {
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: var(--lotus);
+      margin-bottom: 0.5rem;
+    }
+
+    .clarification-pills {
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+
+    .clarification-btn {
+      background: var(--surface-card);
+      border: 1px solid rgba(91, 163, 130, 0.3);
+      border-radius: 10px;
+      padding: 0.55rem 0.85rem;
+      color: var(--text-main);
+      font-size: 0.82rem;
+      cursor: pointer;
+      text-align: left;
+      transition: all 0.18s;
+      line-height: 1.35;
+    }
+
+    .clarification-btn:hover {
+      background: rgba(91, 163, 130, 0.15);
+      border-color: var(--lotus);
+      transform: translateX(2px);
+    }
+
+    /* ─── DOCUMENT MODAL VIEWER ─── */
+    .modal-backdrop {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(6px);
+      z-index: 300;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.22s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+    }
+
+    .modal-backdrop.open {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .doc-modal {
+      background: #191c22;
+      border: 1px solid rgba(203, 168, 106, 0.35);
+      border-radius: 20px;
+      width: 100%;
+      max-width: 680px;
+      max-height: 85vh;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.7);
+      animation: modalSlideUp 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    @keyframes modalSlideUp {
+      from { transform: translateY(20px) scale(0.97); opacity: 0; }
+      to { transform: translateY(0) scale(1); opacity: 1; }
+    }
+
+    .modal-header {
+      padding: 1.1rem 1.35rem;
+      border-bottom: 1px solid var(--surface-border);
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 1rem;
+      background: rgba(22, 25, 30, 0.95);
+      border-radius: 20px 20px 0 0;
+    }
+
+    .modal-header-info h3 {
+      font-size: 1.05rem;
+      font-weight: 600;
+      color: var(--gold);
+      margin-bottom: 0.25rem;
+    }
+
+    .modal-header-info p {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+    }
+
+    .modal-close-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-size: 1.3rem;
+      cursor: pointer;
+      padding: 0.2rem 0.4rem;
+      border-radius: 6px;
+    }
+    .modal-close-btn:hover { color: var(--text-main); }
+
+    .modal-body {
+      padding: 1.25rem 1.35rem;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      line-height: 1.6;
+      font-size: 0.88rem;
+    }
+
+    .doc-section-card {
+      background: var(--surface);
+      border: 1px solid var(--surface-border);
+      border-radius: 12px;
+      padding: 1rem;
+    }
+
+    .doc-section-card h4 {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--gold);
+      margin-bottom: 0.4rem;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+
+    .doc-thai-accordion {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px dashed var(--surface-border);
+      border-radius: 10px;
+      padding: 0.75rem;
+      margin-top: 0.5rem;
+    }
+
+    .doc-thai-accordion summary {
+      font-size: 0.8rem;
+      color: var(--lotus);
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    .doc-thai-text {
+      margin-top: 0.6rem;
+      font-size: 0.82rem;
+      font-family: 'Sarabun', sans-serif;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+
+    .modal-footer {
+      padding: 0.85rem 1.35rem;
+      border-top: 1px solid var(--surface-border);
+      background: rgba(22, 25, 30, 0.95);
+      border-radius: 0 0 20px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.6rem;
+    }
+
+    .modal-footer-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .btn-modal-action {
+      background: var(--surface-card);
+      border: 1px solid var(--surface-border);
+      color: var(--text-main);
+      padding: 0.45rem 0.85rem;
+      border-radius: 10px;
+      font-size: 0.8rem;
+      font-weight: 500;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      transition: all 0.15s;
+    }
+    .btn-modal-action:hover {
+      background: var(--surface-hover);
+      border-color: var(--gold);
+      color: var(--gold);
+    }
+
+    /* ─── USER PROFILE MODAL ─── */
+    .profile-field-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+
+    .profile-label {
+      font-size: 0.76rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .profile-select {
+      background: var(--surface);
+      border: 1px solid var(--surface-border);
+      color: var(--text-main);
+      font-family: var(--font);
+      font-size: 0.88rem;
+      padding: 0.65rem 0.85rem;
+      border-radius: 10px;
+      outline: none;
+    }
+    .profile-select:focus { border-color: var(--gold); }
+
+    /* ─── TOAST NOTIFICATION ─── */
+    .toast-popup {
+      position: fixed;
+      bottom: 85px;
+      left: 50%;
+      transform: translateX(-50%) translateY(20px);
+      background: #20242b;
+      border: 1px solid var(--gold);
+      color: var(--gold);
+      padding: 0.65rem 1.25rem;
+      border-radius: 20px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+      z-index: 500;
+      opacity: 0;
+      pointer-events: none;
+      transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .toast-popup.show {
+      transform: translateX(-50%) translateY(0);
+      opacity: 1;
+    }
+
+    /* ─── INPUT BAR ─── */
+    .input-bar {
+      padding: 0.75rem 1rem 1.1rem;
+      background: rgba(18, 20, 23, 0.95);
+      backdrop-filter: blur(16px);
+      border-top: 1px solid var(--surface-border);
+    }
+
+    .input-wrapper {
+      display: flex;
+      align-items: center;
+      background: var(--surface);
+      border: 1px solid var(--surface-border);
+      border-radius: 16px;
+      padding: 0.35rem 0.5rem 0.35rem 1rem;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+
+    .input-wrapper:focus-within {
+      border-color: var(--gold);
+      box-shadow: 0 0 0 2px rgba(203, 168, 106, 0.15);
+    }
+
+    .chat-input {
+      flex: 1;
+      background: transparent;
+      border: none;
+      color: var(--text-main);
+      font-family: var(--font);
+      font-size: 0.92rem;
+      outline: none;
+    }
+
+    .chat-input::placeholder { color: var(--text-muted); }
+
+    .send-btn {
+      width: 38px;
+      height: 38px;
+      background: var(--gold);
+      border: none;
+      border-radius: 12px;
+      color: #141618;
+      font-size: 1.1rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.18s;
+      flex-shrink: 0;
+    }
+    .send-btn:hover { background: #dfbd7e; transform: scale(1.04); }
+
+    .loading-pulse {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      color: var(--text-muted);
+      font-size: 0.86rem;
+    }
+
+    .loading-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--gold);
+      animation: pulse 1.4s infinite ease-in-out both;
+    }
+
+    @keyframes pulse {
+      0%, 80%, 100% { transform: scale(0.4); opacity: 0.4; }
+      40% { transform: scale(1); opacity: 1; }
+    }
+
+    @media print {
+      body * { visibility: hidden; }
+      .doc-modal, .doc-modal * { visibility: visible; }
+      .doc-modal { position: absolute; left: 0; top: 0; width: 100%; border: none; box-shadow: none; }
+      .modal-footer, .modal-close-btn { display: none !important; }
+    }
+
+    @media (max-width: 600px) {
+      .header-content { padding: 0.65rem 0.75rem; }
+      .messages-area { padding: 1rem 0.75rem; }
+      .bubble { padding: 0.85rem 0.95rem; font-size: 0.88rem; }
+      .input-bar { padding: 0.65rem 0.75rem 0.95rem; }
+      .quick-chips { grid-template-columns: 1fr; }
+    }
+  
+    /* ─── LUXURY HEADER ACTIONS & CUSTOM DROPDOWN (v5.0) ─── */
+    .btn-header-new {
+      background: linear-gradient(135deg, #2b323c, #1f242b);
+      border: 1px solid rgba(203, 168, 106, 0.4);
+      color: var(--gold);
+      font-size: 0.78rem;
+      font-weight: 600;
+      padding: 0.38rem 0.75rem;
+      border-radius: 12px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      transition: all 0.18s ease;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+    }
+    .btn-header-new:hover {
+      background: rgba(203, 168, 106, 0.15);
+      border-color: var(--gold);
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(203, 168, 106, 0.25);
+    }
+    @media (max-width: 480px) {
+      .btn-header-new-text { display: none; }
+      .btn-header-new { padding: 0.38rem 0.55rem; }
+    }
+
+    .lang-dropdown-wrapper {
+      position: relative;
+    }
+    .lang-dropdown-btn {
+      background: var(--surface);
+      border: 1px solid var(--surface-border);
+      color: var(--text-main);
+      font-size: 0.78rem;
+      font-weight: 600;
+      padding: 0.38rem 0.65rem;
+      border-radius: 12px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      transition: all 0.2s;
+    }
+    .lang-dropdown-btn:hover {
+      background: var(--surface-card);
+      border-color: rgba(203, 168, 106, 0.4);
+    }
+    .lang-caret {
+      font-size: 0.65rem;
+      color: var(--text-muted);
+      transition: transform 0.2s;
+    }
+    .lang-dropdown-wrapper.open .lang-caret {
+      transform: rotate(180deg);
+    }
+    .lang-dropdown-menu {
+      position: absolute;
+      top: calc(100% + 6px);
+      right: 0;
+      background: #191c22;
+      border: 1px solid rgba(203, 168, 106, 0.3);
+      border-radius: 12px;
+      padding: 0.35rem;
+      min-width: 160px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
+      z-index: 250;
+      display: none;
+      flex-direction: column;
+      gap: 0.2rem;
+      backdrop-filter: blur(12px);
+    }
+    .lang-dropdown-wrapper.open .lang-dropdown-menu {
+      display: flex;
+      animation: dropdownFade 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    @keyframes dropdownFade {
+      from { opacity: 0; transform: translateY(-6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .lang-menu-item {
+      display: flex;
+      align-items: center;
+      gap: 0.55rem;
+      padding: 0.5rem 0.7rem;
+      border-radius: 8px;
+      font-size: 0.8rem;
+      color: var(--text-main);
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .lang-menu-item:hover {
+      background: rgba(203, 168, 106, 0.12);
+      color: var(--gold);
+    }
+    .lang-menu-item.active {
+      background: rgba(203, 168, 106, 0.2);
+      color: var(--gold);
+      font-weight: 600;
+    }
+
+  
+    /* ─── V6.0 CONSULTANT+ STYLING & CALCULATOR ─── */
+    .btn-header-calc {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 14px;
+      background: rgba(203, 168, 106, 0.12);
+      border: 1px solid rgba(203, 168, 106, 0.35);
+      border-radius: 8px;
+      color: var(--gold);
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      white-space: nowrap;
+    }
+    .btn-header-calc:hover {
+      background: rgba(203, 168, 106, 0.22);
+      border-color: var(--gold);
+      box-shadow: 0 0 12px rgba(203, 168, 106, 0.25);
+      transform: translateY(-1px);
+    }
+    @media (max-width: 600px) {
+      .btn-header-calc-text { display: none; }
+      .btn-header-calc { padding: 7px 10px; }
+    }
+
+    /* Inline statute badge */
+    .statute-inline-link {
+      display: inline-flex;
+      align-items: center;
+      padding: 1px 7px;
+      margin: 0 2px;
+      background: rgba(59, 130, 246, 0.12);
+      border: 1px solid rgba(59, 130, 246, 0.35);
+      border-radius: 6px;
+      color: #93c5fd !important;
+      text-decoration: none !important;
+      font-weight: 600;
+      font-size: 0.92em;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      vertical-align: baseline;
+    }
+    .statute-inline-link:hover {
+      background: rgba(59, 130, 246, 0.25);
+      border-color: #60a5fa;
+      color: #ffffff !important;
+      box-shadow: 0 0 10px rgba(59, 130, 246, 0.3);
+    }
+
+    /* Input Pulse Animation */
+    @keyframes inputPulseAnim {
+      0% { box-shadow: 0 0 0 0 rgba(203, 168, 106, 0.5); border-color: var(--gold); }
+      50% { box-shadow: 0 0 0 6px rgba(203, 168, 106, 0.25); border-color: var(--gold); }
+      100% { box-shadow: 0 0 0 0 rgba(203, 168, 106, 0); }
+    }
+    .input-prefilled-pulse {
+      animation: inputPulseAnim 1.2s ease-in-out;
+    }
+
+    /* Compact Statute Pills */
+    .statute-cards-grid {
+      display: flex !important;
+      flex-wrap: wrap !important;
+      gap: 6px !important;
+      margin-top: 6px !important;
+    }
+    .statute-card-btn {
+      display: inline-flex !important;
+      align-items: center !important;
+      gap: 6px !important;
+      padding: 5px 11px !important;
+      background: rgba(203, 168, 106, 0.08) !important;
+      border: 1px solid rgba(203, 168, 106, 0.22) !important;
+      border-radius: 7px !important;
+      cursor: pointer !important;
+      transition: all 0.2s ease !important;
+      font-size: 0.81rem !important;
+      max-width: 100% !important;
+    }
+    .statute-card-btn:hover {
+      background: rgba(203, 168, 106, 0.16) !important;
+      border-color: var(--gold) !important;
+      transform: translateY(-1px) !important;
+    }
+    .statute-card-info {
+      display: flex !important;
+      flex-direction: row !important;
+      align-items: center !important;
+      gap: 6px !important;
+    }
+    .statute-card-title {
+      font-weight: 600 !important;
+      color: var(--gold) !important;
+    }
+    .statute-card-desc {
+      display: none !important;
+    }
+
+    /* Calculator Modal */
+    .calc-modal-backdrop {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(8px);
+      z-index: 10000;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    .calc-modal-backdrop.active { display: flex; }
+    .calc-modal {
+      background: #191c21;
+      border: 1px solid rgba(203, 168, 106, 0.3);
+      border-radius: 16px;
+      width: 100%;
+      max-width: 680px;
+      max-height: 90vh;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+      overflow: hidden;
+      animation: modalSlideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    @keyframes modalSlideUp {
+      from { opacity: 0; transform: translateY(20px) scale(0.97); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    .calc-modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 20px;
+      background: rgba(255, 255, 255, 0.03);
+      border-bottom: 1px solid var(--surface-border);
+    }
+    .calc-modal-header h3 {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--text-main);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .calc-modal-close {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 1.4rem;
+      cursor: pointer;
+      padding: 4px;
+      line-height: 1;
+      transition: color 0.2s;
+    }
+    .calc-modal-close:hover { color: var(--text-main); }
+    .calc-tabs {
+      display: flex;
+      overflow-x: auto;
+      background: rgba(0, 0, 0, 0.2);
+      border-bottom: 1px solid var(--surface-border);
+      padding: 4px 12px 0 12px;
+      gap: 4px;
+    }
+    .calc-tab-btn {
+      padding: 10px 14px;
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: var(--text-muted);
+      font-size: 0.84rem;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: all 0.2s;
+    }
+    .calc-tab-btn.active {
+      color: var(--gold);
+      border-bottom-color: var(--gold);
+      background: rgba(203, 168, 106, 0.06);
+      border-radius: 8px 8px 0 0;
+    }
+    .calc-body {
+      padding: 20px;
+      overflow-y: auto;
+      flex: 1;
+    }
+    .calc-form-group {
+      margin-bottom: 16px;
+    }
+    .calc-form-group label {
+      display: block;
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+      font-weight: 500;
+    }
+    .calc-input, .calc-select {
+      width: 100%;
+      padding: 10px 14px;
+      background: #121417;
+      border: 1px solid var(--surface-border);
+      border-radius: 8px;
+      color: var(--text-main);
+      font-size: 0.95rem;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .calc-input:focus, .calc-select:focus {
+      border-color: var(--gold);
+    }
+    .calc-result-box {
+      background: rgba(203, 168, 106, 0.06);
+      border: 1px solid rgba(203, 168, 106, 0.25);
+      border-radius: 12px;
+      padding: 16px;
+      margin-top: 20px;
+    }
+    .calc-result-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 6px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      font-size: 0.88rem;
+    }
+    .calc-result-row:last-child { border-bottom: none; }
+    .calc-result-label { color: var(--text-muted); }
+    .calc-result-val { font-weight: 600; color: var(--text-main); }
+    .calc-result-total {
+      font-size: 1.05rem;
+      color: var(--gold);
+      font-weight: 700;
+      padding-top: 10px;
+      border-top: 1px dashed rgba(203, 168, 106, 0.3);
+    }
+    .calc-paste-btn {
+      width: 100%;
+      margin-top: 14px;
+      padding: 11px;
+      background: var(--gold);
+      border: none;
+      border-radius: 8px;
+      color: #121417;
+      font-weight: 700;
+      font-size: 0.88rem;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .calc-paste-btn:hover {
+      filter: brightness(1.1);
+      transform: translateY(-1px);
+    }
+
+  </style>
+</head>
+<body>
+
+  <!-- Collapsible Left Drawer -->
+  <div class="drawer-backdrop" id="drawer-backdrop" onclick="toggleDrawer(false)"></div>
+  <div class="drawer" id="drawer">
+    <div class="drawer-header">
+      <div class="drawer-title">
+        <span>📜</span> <span id="drawer-heading">Консультации</span>
+      </div>
+      <button class="drawer-close" onclick="toggleDrawer(false)">✕</button>
+    </div>
+    <div class="drawer-actions">
+      <button class="btn-new-dialog" onclick="createNewDialogAction()">
+        <span>➕</span> <span id="btn-new-dialog-text">Новый диалог</span>
+      </button>
+    </div>
+    <div class="drawer-section-title" id="drawer-history-title">История консультаций</div>
+    <div class="session-list" id="session-list"></div>
+  </div>
+
+  <!-- Document Modal Viewer -->
+  <div class="modal-backdrop" id="doc-modal-backdrop" onclick="closeDocumentModal(event)">
+    <div class="doc-modal" id="doc-modal">
+      <div class="modal-header">
+        <div class="modal-header-info">
+          <h3 id="modal-doc-title">Законодательный акт</h3>
+          <p id="modal-doc-subtitle">Статья закона</p>
+        </div>
+        <button class="modal-close-btn" onclick="closeDocumentModalDirect()">✕</button>
+      </div>
+      <div class="modal-body" id="modal-doc-body"></div>
+      <div class="modal-footer">
+        <div class="modal-footer-actions">
+          <button class="btn-modal-action" onclick="copyDocumentText()">📋 Скопировать</button>
+          <button class="btn-modal-action" onclick="printDocument()">🖨️ Печать / PDF</button>
+          <button class="btn-modal-action" onclick="shareDocument()">📤 Поделиться</button>
+        </div>
+        <button class="btn-modal-action" style="border-color: var(--gold); color: var(--gold);" onclick="closeDocumentModalDirect()">Закрыть</button>
+      </div>
+    </div>
+  </div>
+
+<!-- Profile modal removed in v5.0 (Unified Client Profile) -->
+
+  <!-- Toast Notification -->
+  <div class="toast-popup" id="toast-popup">Текст статьи скопирован в буфер обмена</div>
+
+  <header>
+    <div class="header-content">
+      <div class="header-left">
+        <button class="btn-drawer-toggle" onclick="toggleDrawer(true)" title="Открыть историю диалогов">☰</button>
+        <div class="brand">
+          <div class="brand-icon">⚖️</div>
+          <div class="brand-info">
+            <h1>Consultant+</h1>
+            <p><span class="status-dot"></span> <span id="status-indicator">● Онлайн · Таиланд</span></p>
+          </div>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button class="btn-header-new" onclick="createNewDialogAction()" title="Новый диалог">
+          <span>➕</span> <span class="btn-header-new-text" id="header-new-btn-text">Новый диалог</span>
+        </button>
+                <button class="btn-header-calc" onclick="openCalculatorModal()" title="⚡ Экспресс-калькулятор сделок и налогов Таиланда">
+          <span>⚡</span> <span class="btn-header-calc-text">Калькулятор</span>
+        </button>
+        <div class="lang-dropdown-wrapper" id="lang-dropdown-wrapper">
+          <button class="lang-dropdown-btn" id="lang-dropdown-btn" onclick="toggleLangDropdown(event)">
+            <span id="lang-flag-current">🇷🇺</span>
+            <span id="lang-code-current">RU</span>
+            <span class="lang-caret">▾</span>
+          </button>
+          <div class="lang-dropdown-menu" id="lang-dropdown-menu">
+            <div class="lang-menu-item active" data-lang="ru" onclick="selectLang('ru')">
+              <span>🇷🇺</span> <span>Русский (RU)</span>
+            </div>
+            <div class="lang-menu-item" data-lang="en" onclick="selectLang('en')">
+              <span>🇬🇧</span> <span>English (EN)</span>
+            </div>
+            <div class="lang-menu-item" data-lang="th" onclick="selectLang('th')">
+              <span>🇹🇭</span> <span>ภาษาไทย (TH)</span>
+            </div>
+            <div class="lang-menu-item" data-lang="zh" onclick="selectLang('zh')">
+              <span>🇨🇳</span> <span>中文 (ZH)</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="chat-container">
+    <div class="messages-area" id="messages-area">
+      <div class="welcome-card" id="welcome-card">
+        <div class="welcome-header">
+          <span style="font-size: 1.4rem;">🌿</span>
+          <h2 id="welcome-title">Савади крап! Добро пожаловать.</h2>
+        </div>
+        <p class="welcome-desc" id="welcome-desc">
+          Я ваш персональный юридический советник по законодательству Королевства Таиланд. Ответы строго базируются на официальных кодексах, прецедентах Верховного Суда (San Deka) и предписаниях ведомств.
+        </p>
+        <div class="topics-title" id="topics-title">Популярные направления консультаций:</div>
+        <div class="quick-chips" id="quick-chips-container"></div>
+      </div>
+    </div>
+
+    <div class="input-bar">
+      <div class="input-wrapper">
+        <input 
+          type="text" 
+          class="chat-input" 
+          id="chat-input" 
+          placeholder="Задайте юридический вопрос по Таиланду..." 
+          autocomplete="off"
+          onkeydown="if(event.key==='Enter') sendUserMessage()"
+        />
+        <button class="send-btn" id="send-btn" onclick="sendUserMessage()">➤</button>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const I18N = {
+      ru: {
+        status: "● Онлайн · Таиланд",
+        placeholder: "Задайте юридический вопрос по Таиланду...",
+        welcomeTitle: "Савади крап! Добро пожаловать.",
+        welcomeDesc: "Я ваш персональный юридический советник по законодательству Королевства Таиланд. Ответы строго базируются на официальных кодексах, решениях Верховного Суда (San Deka) и предписаниях ведомств.",
+        topicsTitle: "Популярные юридические направления:",
+        drawerHeading: "Консультации",
+        newDialogText: "Новый диалог",
+        drawerHistoryTitle: "История консультаций",
+        profileBadge: "Профиль",
+        loading: "Анализирую нормативные акты и прецеденты Верховного Суда...",
+        clarifyHeader: "💡 Стратегические вопросы для продолжения диалога:",
+        statuteHeader: "📜 Официальная нормативная база (Royal Gazette):",
+        openDocText: "Открыть статью закона ↗",
+        precedentHeader: "⚖️ Прецеденты Верховного Суда (San Deka):",
+        networkError: "🌿 Извините, заминка сети. Пожалуйста, повторите вопрос.",
+        relatedCasePrefix: "Обнаружен смежный кейс в вашем диалоге",
+        switchCaseAction: "Открыть тот диалог",
+        chips: [
+          { icon: "🏢", label: "Квартиры (Freehold 49% & FET)", query: "Как купить квартиру в кондоминиуме по квоте 49% Freehold и получить форму FET в банке?" },
+          { icon: "🏡", label: "Земля и виллы (Leasehold 30)", query: "Может ли иностранец владеть землей или виллой в Таиланде через Leasehold на 30 лет и суперфиций?" },
+          { icon: "💰", label: "Налог на ввоз денег (P.161)", query: "Какие налоги на перевод денег из-за рубежа в Таиланд по распоряжениям RD P.161 и P.162?" },
+          { icon: "💼", label: "Компания 51/49 и риски Nominee", query: "Какие правила для тайской компании 51/49 и уголовная ответственность за номиналов по ст. 36 FBA?" },
+          { icon: "⚖️", label: "Выходное пособие (ст. 118 LPA)", query: "Каков точный размер выходного пособия при увольнении сотрудника по трудовому закону LPA ст. 118?" },
+          { icon: "🛂", label: "Визы и Work Permit", query: "Какие требования и соотношение тайцев к иностранцу для получения Work Permit и 10-летней визы LTR?" }
+        ]
+      },
+      en: {
+        status: "● Online · Thailand",
+        placeholder: "Ask a legal question on Thai law...",
+        welcomeTitle: "Sawasdee Krub! Welcome.",
+        welcomeDesc: "I am your senior statutory legal advisor for the Kingdom of Thailand. Every answer is strictly grounded in the Royal Gazette, Council of State interpretations, and Supreme Court landmarks.",
+        topicsTitle: "Recommended Legal Practice Areas:",
+        drawerHeading: "Consultations",
+        newDialogText: "New Consultation",
+        drawerHistoryTitle: "Past Dialogues",
+        profileBadge: "Profile",
+        loading: "Reviewing statutes, ministerial orders, and Supreme Court landmarks...",
+        clarifyHeader: "💡 Strategic Follow-up Clarifications:",
+        statuteHeader: "📜 Official Statutory Basis (Royal Gazette):",
+        openDocText: "Open Statute Clause ↗",
+        precedentHeader: "⚖️ Supreme Court (San Deka) Precedents:",
+        networkError: "🌿 Temporary connection issue. Please retry.",
+        relatedCasePrefix: "Related past case detected in dialogue",
+        switchCaseAction: "View consultation",
+        chips: [
+          { icon: "🏢", label: "Condo 49% Freehold & FET", query: "Can a foreigner own 100% of a condominium unit under the 49% Freehold Quota and how to obtain the FET form?" },
+          { icon: "🏡", label: "Land & Villa (30-Yr Leasehold)", query: "How can a foreigner hold a villa via a 30-year registered Leasehold and Superficies on land?" },
+          { icon: "💰", label: "Foreign Tax Remittance (P.161)", query: "What are the PIT tax rules on remitting overseas money into Thailand under Revenue Orders Paw. 161 and 162?" },
+          { icon: "💼", label: "Thai Company 51/49 & Nominee", query: "What are the legal requirements for a 51/49 company and criminal risks of nominee shareholders under FBA Section 36?" },
+          { icon: "⚖️", label: "Labor Severance (LPA Sec 118)", query: "What are the mandatory severance pay scales when terminating an employee without cause under LPA Section 118?" },
+          { icon: "🛂", label: "Visas & Digital Work Permit", query: "What are the rules and employee ratios for obtaining a Digital Work Permit and 10-Year LTR Visa?" }
+        ]
+      },
+      th: {
+        status: "● ออนไลน์ · ประเทศไทย",
+        placeholder: "พิมพ์คำถามทางกฎหมายแห่งราชอาณาจักรไทย...",
+        welcomeTitle: "สวัสดีครับ ยินดีต้อนรับสู่ระบบที่ปรึกษากฎหมาย",
+        welcomeDesc: "ระบบปัญญาประดิษฐ์ที่ปรึกษากฎหมายไทยเฉพาะทาง อ้างอิงจากบทบัญญัติแห่งกฎหมาย ราชกิจจานุเบกษา และคำพิพากษาศาลฎีกา",
+        topicsTitle: "ประเด็นกฎหมายและธุรกิจยอดนิยม:",
+        drawerHeading: "บทสนทนาการปรึกษา",
+        newDialogText: "เปิดบทสนทนาใหม่",
+        drawerHistoryTitle: "ประวัติการปรึกษา",
+        profileBadge: "โปรไฟล์",
+        loading: "กำลังตรวจสอบกฎหมาย คำพิพากษาศาลฎีกา และคำสั่งราชการ...",
+        clarifyHeader: "💡 ประเด็นสอบถามเพิ่มเติมเพื่อความชัดเจน:",
+        statuteHeader: "📜 บทบัญญัติแห่งกฎหมายที่เกี่ยวข้อง:",
+        openDocText: "เปิดอ่านตัวบทกฎหมาย ↗",
+        precedentHeader: "⚖️ แนวบรรทัดฐานคำพิพากษาศาลฎีกา:",
+        networkError: "🌿 ระบบขัดข้องชั่วคราว กรุณาลองใหม่อีกครั้งครับ",
+        relatedCasePrefix: "พบประเด็นที่เกี่ยวข้องกันจากบทสนทนาก่อนหน้า",
+        switchCaseAction: "ดูบทสนทนานี้",
+        chips: [
+          { icon: "🏢", label: "กรรมสิทธิ์ห้องชุด (โควตา 49%)", query: "คนต่างด้าวสามารถถือกรรมสิทธิ์ห้องชุดในอาคารชุด 100% (Foreign Freehold 49%) และขอแบบ FET อย่างไร?" },
+          { icon: "🏡", label: "ที่ดินและวิลล่า (สิทธิการเช่า 30 ปี)", query: "คนต่างด้าวสามารถถือครองที่ดินและวิลล่าผ่านสัญญาเช่าระยะยาว 30 ปี (Leasehold) และสิทธิเหนือพื้นดินอย่างไร?" },
+          { icon: "💰", label: "ภาษีเงินได้นำเข้า (ป.161/162)", query: "เกณฑ์การเสียภาษีเงินได้จากต่างประเทศที่นำเข้ามาในไทยตามคำสั่งกรมสรรพากร ป.161/2566 และ ป.162/2566 เป็นอย่างไร?" },
+          { icon: "💼", label: "บริษัท 51/49 และความเสี่ยง Nominee", query: "หลักเกณฑ์การจัดตั้งบริษัทไทย 51/49 และความรับผิดทางอาญาเกี่ยวกับการใช้ตัวแทนถือหุ้นแทน (Nominee) ตาม พ.ร.บ.ต่างด้าว?" },
+          { icon: "⚖️", label: "ค่าชดเชยการเลิกจ้าง (มาตรา 118)", query: "อัตราค่าชดเชยการเลิกจ้างตามอายุงานตามมาตรา 118 แห่ง พ.ร.บ.คุ้มครองแรงงาน มีเกณฑ์อย่างไร?" },
+          { icon: "🛂", label: "วีซ่าและใบอนุญาตทำงาน (Work Permit)", query: "เงื่อนไขการขอใบอนุญาตทำงาน Work Permit และสิทธิประโยชน์ของวีซ่า LTR 10 ปี มีอะไรบ้าง?" }
+        ]
+      },
+      zh: {
+        status: "● 在线 · 泰国",
+        placeholder: "请输入有关泰王国法律的问题...",
+        welcomeTitle: "您好，欢迎使用泰国法律顾问",
+        welcomeDesc: "我是您的泰王国法律私人顾问，严格依据泰国法定成文法、最高法院裁判文书（San Deka）及官方敕令提供合规咨询解答。",
+        topicsTitle: "建议咨询的核心合规议题：",
+        drawerHeading: "咨询案例库",
+        newDialogText: "开启新咨询",
+        drawerHistoryTitle: "历史咨询记录",
+        profileBadge: "用户档案",
+        loading: "正在检索成文法规、最高法院判例及部门规章...",
+        clarifyHeader: "💡 建议进一步明确的实务事项：",
+        statuteHeader: "📜 适用法律渊源条款：",
+        openDocText: "阅读法律条文详情 ↗",
+        precedentHeader: "⚖️ 最高法院裁判要旨：",
+        networkError: "🌿 网络连接稍有波动，请重新发送咨询问题。",
+        relatedCasePrefix: "检测到您在既往咨询中探讨过关联案例",
+        switchCaseAction: "查看该历史案例",
+        chips: [
+          { icon: "🏢", label: "公寓大厦（49%永久产权）", query: "外籍人士如何合法取得泰国公寓49%永久产权（Foreign Freehold）并办理境外汇款FET核准函？" },
+          { icon: "🏡", label: "土地与别墅（30年租赁权）", query: "外籍人士如何通过30年法定登记租赁权（Leasehold）及地上权合规持有泰国土地与别墅？" },
+          { icon: "💰", label: "境外所得税（P.161号令）", query: "根据泰国税务局P.161/162号令，汇入泰国的境外收入应如何判定税务居民身份并合法纳税？" },
+          { icon: "💼", label: "合资公司51/49与代持风险", query: "依《外籍商法》设立51/49泰资合资企业需满足哪些实质条件？名义代持（Nominee）面临何种刑事处罚？" },
+          { icon: "⚖️", label: "辞退员工补偿（LPA第118条）", query: "依据《劳动保护法》第118条，辞退无过错员工各工龄梯队法定遣散补偿金核算标准？" },
+          { icon: "🛂", label: "工作证与LTR黄金签证", query: "外籍雇员办理Digital Work Permit工作证的注册资本配比及10年期LTR签证申请要件？" }
+        ]
+      }
+    };
+
+    // ─── STATE MANAGEMENT ───
+    let currentLang = 'en';
+    let currentSessionId = null;
+    let currentStatutesCache = [];
+    let currentPrecedentsCache = [];
+    let activeModalDocument = null;
+
+    let userId = (function() {
+      if (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initDataUnsafe && window.Telegram.WebApp.initDataUnsafe.user) {
+        return 'tg_' + window.Telegram.WebApp.initDataUnsafe.user.id;
+      }
+      let saved = localStorage.getItem('th_legal_user_id');
+      if (!saved) {
+        saved = 'user_' + Math.random().toString(36).substring(2, 9);
+        localStorage.setItem('th_legal_user_id', saved);
+      }
+      return saved;
+    })();
+
+    // ─── TELEGRAM & HAPTICS ───
+    function initTelegram() {
+      if (window.Telegram && window.Telegram.WebApp) {
+        const tg = window.Telegram.WebApp;
+        tg.ready();
+        tg.expand();
+      }
+    }
+
+    function haptic(type = 'medium') {
+      try {
+        if (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.HapticFeedback) {
+          if (type === 'selection') window.Telegram.WebApp.HapticFeedback.selectionChanged();
+          else window.Telegram.WebApp.HapticFeedback.impactOccurred(type);
+        }
+      } catch (e) {}
+    }
+
+    function showToast(msg) {
+      const toast = document.getElementById('toast-popup');
+      toast.innerText = msg;
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 2400);
+    }
+
+    // ─── DRAWER CONTROL ───
+    function toggleDrawer(open) {
+      const drawer = document.getElementById('drawer');
+      const backdrop = document.getElementById('drawer-backdrop');
+      if (open) {
+        loadUserSessions();
+        drawer.classList.add('open');
+        backdrop.classList.add('open');
+        haptic('selection');
+      } else {
+        drawer.classList.remove('open');
+        backdrop.classList.remove('open');
+      }
+    }
+
+    async function loadUserSessions() {
+      const listEl = document.getElementById('session-list');
+      try {
+        const resp = await fetch(`/api/user/${userId}/sessions?t=${Date.now()}`);
+        const data = await resp.json();
+        listEl.innerHTML = '';
+
+        if (!data.sessions || data.sessions.length === 0) {
+          listEl.innerHTML = `<div style="padding: 1.5rem 0.5rem; text-align: center; color: var(--text-muted); font-size: 0.8rem;">Пока нет предыдущих диалогов.<br>Нажмите «Новый диалог» выше.</div>`;
+          return;
+        }
+
+        data.sessions.forEach(s => {
+          const item = document.createElement('div');
+          item.className = 'session-item' + (s.session_id === currentSessionId ? ' active' : '');
+          
+          let badgeClass = 'session-badge';
+          let badgeText = 'Юриспруденция';
+          if (s.domain === 'CONDO_PROPERTY') { badgeClass += ' condo'; badgeText = '🏢 Кондо'; }
+          else if (s.domain === 'LAND_PROPERTY') { badgeClass += ' condo'; badgeText = '🏡 Земля'; }
+          else if (s.domain === 'TAX_REVENUE') { badgeClass += ' tax'; badgeText = '💰 Налоги'; }
+          else if (s.domain === 'LABOR_EMPLOYMENT') { badgeClass += ' labor'; badgeText = '⚖️ Труд'; }
+          else if (s.domain === 'IMMIGRATION_VISA') { badgeClass += ' visa'; badgeText = '🛂 Визы'; }
+          else if (s.domain === 'CORPORATE_FOREIGN_BUSINESS') { badgeText = '💼 Бизнес'; }
+
+          item.innerHTML = `
+            <div class="session-item-header">
+              <div class="session-item-title">${escapeHtml(s.title || 'Консультация')}</div>
+              <div class="${badgeClass}">${badgeText}</div>
+            </div>
+            <div class="session-item-preview">${escapeHtml(s.last_preview || 'Сообщений: ' + s.message_count)}</div>
+            <button class="session-delete-btn" onclick="deleteSessionAction(event, '${s.session_id}')" title="Удалить">🗑️</button>
+          `;
+          item.onclick = (e) => {
+            if (e.target.classList.contains('session-delete-btn')) return;
+            switchToSession(s.session_id);
+          };
+          listEl.appendChild(item);
+        });
+      } catch (err) {
+        listEl.innerHTML = `<div style="padding: 1rem; color: #e07a5f; font-size: 0.8rem;">Ошибка загрузки сессий</div>`;
+      }
+    }
+
+    async function switchToSession(sessionId) {
+      if (sessionId === currentSessionId) {
+        toggleDrawer(false);
+        return;
+      }
+      haptic('selection');
+      toggleDrawer(false);
+
+      try {
+        const resp = await fetch(`/api/sessions/${sessionId}?user_id=${encodeURIComponent(userId)}&t=${Date.now()}`);
+        if (!resp.ok) return;
+        const data = await resp.json();
+
+        currentSessionId = data.session_id;
+        renderSessionMessages(data.messages);
+      } catch (e) {
+        console.error('Error switching session:', e);
+      }
+    }
+
+    async function deleteSessionAction(event, sessionId) {
+      event.stopPropagation();
+      haptic('medium');
+      try {
+        await fetch(`/api/sessions/${sessionId}?user_id=${userId}`, { method: 'DELETE' });
+        if (currentSessionId === sessionId) {
+          createNewDialogAction();
+        } else {
+          loadUserSessions();
+        }
+      } catch (e) {}
+    }
+
+    async function createNewDialogAction() {
+      haptic('medium');
+      toggleDrawer(false);
+      try {
+        const resp = await fetch(`/api/user/${userId}/sessions/new`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_id: userId, lang: currentLang })
+        });
+        const data = await resp.json();
+        currentSessionId = data.session_id;
+      } catch (e) {
+        currentSessionId = 'sess_' + Math.random().toString(36).substring(2, 9);
+      }
+
+      const container = document.getElementById('messages-area');
+      const welcome = document.getElementById('welcome-card');
+      container.innerHTML = '';
+      container.appendChild(welcome);
+      updateQuickChips(currentLang);
+    }
+
+    // ─── DOCUMENT MODAL VIEWER IMPLEMENTATION ───
+    function openStatuteModal(idx) {
+      const statute = currentStatutesCache[idx];
+      if (!statute) return;
+      activeModalDocument = statute;
+      haptic('selection');
+
+      document.getElementById('modal-doc-title').innerText = statute.title || 'Законодательный акт';
+      document.getElementById('modal-doc-subtitle').innerText = statute.section_num || '';
+
+      const bodyEl = document.getElementById('modal-doc-body');
+      let thaiBlock = '';
+      if (statute.official_th) {
+        thaiBlock = `
+          <details class="doc-thai-accordion">
+            <summary>🇹🇭 Официальный первоисточник на тайском языке (Royal Gazette)</summary>
+            <div class="doc-thai-text">
+              <strong>${escapeHtml(statute.official_th)}</strong><br>
+              ${statute.official_th_section ? '<em>' + escapeHtml(statute.official_th_section) + '</em><br>' : ''}
+              ${escapeHtml(statute.official_th_text || 'พระราชบัญญัติแห่งราชอาณาจักรไทย ฉบับประกาศในราชกิจจานุเบกษา')}
+            </div>
+          </details>
+        `;
+      }
+
+      bodyEl.innerHTML = `
+        <div class="doc-section-card">
+          <h4>💡 Правовое значение и практическое применение</h4>
+          <div>${escapeHtml(statute.snippet || '')}</div>
+        </div>
+
+        <div class="doc-section-card">
+          <h4>📜 Полный текст законодательной нормы (Официальный перевод)</h4>
+          <div style="white-space: pre-line; line-height: 1.6;">${escapeHtml(statute.full_text || statute.snippet || '')}</div>
+        </div>
+
+        ${thaiBlock}
+      `;
+
+      document.getElementById('doc-modal-backdrop').classList.add('open');
+    }
+
+    function openPrecedentModal(idx) {
+      const prec = currentPrecedentsCache[idx];
+      if (!prec) return;
+      activeModalDocument = {
+        title: prec.deka_no || 'Прецедент Верховного Суда Таиланда (San Deka)',
+        section_num: 'Обязательное судебное толкование',
+        full_text: prec.headline || prec.full_text || ''
+      };
+      haptic('selection');
+
+      document.getElementById('modal-doc-title').innerText = activeModalDocument.title;
+      document.getElementById('modal-doc-subtitle').innerText = 'Решение высшей судебной инстанции Королевства Таиланд';
+
+      const bodyEl = document.getElementById('modal-doc-body');
+      bodyEl.innerHTML = `
+        <div class="doc-section-card">
+          <h4>⚖️ Позиция и правовой вывод Верховного Суда (San Deka)</h4>
+          <div style="line-height: 1.6;">${escapeHtml(activeModalDocument.full_text)}</div>
+        </div>
+        <div class="doc-section-card" style="font-size: 0.82rem; color: var(--text-muted);">
+          🏛 <strong>Значение для инвестора</strong>: Решения палаты Верховного Суда (San Deka) имеют статус квази-прецедента и определяют то, как суды низших инстанций и государственные регистраторы Land Office применяют кодексы.
+        </div>
+      `;
+
+      document.getElementById('doc-modal-backdrop').classList.add('open');
+    }
+
+    function closeDocumentModal(e) {
+      if (e.target.id === 'doc-modal-backdrop') {
+        closeDocumentModalDirect();
+      }
+    }
+
+    function closeDocumentModalDirect() {
+      document.getElementById('doc-modal-backdrop').classList.remove('open');
+      haptic('selection');
+    }
+
+    function copyDocumentText() {
+      if (!activeModalDocument) return;
+      const text = `${activeModalDocument.title}\n${activeModalDocument.section_num}\n\n${activeModalDocument.full_text || activeModalDocument.snippet}`;
+      navigator.clipboard.writeText(text).then(() => {
+        showToast('Текст статьи скопирован в буфер обмена 📋');
+        haptic('medium');
+      });
+    }
+
+    function printDocument() {
+      window.print();
+    }
+
+    function shareDocument() {
+      if (!activeModalDocument) return;
+      if (navigator.share) {
+        navigator.share({
+          title: activeModalDocument.title,
+          text: `${activeModalDocument.title}\n${activeModalDocument.full_text || activeModalDocument.snippet}`
+        }).catch(() => {});
+      } else {
+        copyDocumentText();
+      }
+    }
+
+// Profile settings modal removed in v5.0
+
+    // ─── RENDERING & MESSAGES ───
+    function renderSessionMessages(messages) {
+      const container = document.getElementById('messages-area');
+      container.innerHTML = '';
+
+      if (!messages || messages.length === 0) {
+        const welcome = document.getElementById('welcome-card');
+        container.appendChild(welcome);
+        updateQuickChips(currentLang);
+        return;
+      }
+
+      const pack = I18N[currentLang] || I18N.ru;
+
+      messages.forEach(m => {
+        const msgDiv = document.createElement('div');
+        msgDiv.className = 'message ' + (m.role === 'user' ? 'user' : 'bot');
+
+        if (m.role === 'user') {
+          msgDiv.innerHTML = `<div class="bubble">${escapeHtml(m.content)}</div>`;
+        } else {
+          let relatedCaseHtml = '';
+          if (m.related_case) {
+            relatedCaseHtml = `
+              <div class="related-case-badge">
+                <div class="related-case-icon">💡</div>
+                <div class="related-case-content">
+                  <div>${escapeHtml(m.related_case.hint || pack.relatedCasePrefix)}</div>
+                  <span class="related-case-link" onclick="switchToSession('${m.related_case.session_id}')">
+                    ${pack.switchCaseAction} «${escapeHtml(m.related_case.title || '')}» →
+                  </span>
+                </div>
+              </div>
+            `;
+          }
+
+          // Render interactive statute cards
+          let statutesHtml = '';
+          if (m.citations && m.citations.length > 0) {
+            currentStatutesCache = m.citations;
+            statutesHtml = `
+              <div class="statute-action-box">
+                <div class="statute-action-header">📜 ${pack.statuteHeader}</div>
+                <div class="statute-cards-grid">
+            `;
+            m.citations.forEach((s, idx) => {
+              statutesHtml += `
+                <div class="statute-card-btn" onclick="openStatuteModal(${idx})">
+                  <div class="statute-card-info">
+                    <div class="statute-card-title">${escapeHtml(s.title || '')}</div>
+                    <div class="statute-card-desc">${escapeHtml(s.section_num ? s.section_num + ' — ' : '')}${escapeHtml(s.snippet || '')}</div>
+                  </div>
+                  <div class="statute-card-action-tag">${pack.openDocText}</div>
+                </div>
+              `;
+            });
+            statutesHtml += `</div></div>`;
+          }
+
+          // Render precedent cards
+          let precedentsHtml = '';
+          if (m.precedents && m.precedents.length > 0) {
+            currentPrecedentsCache = m.precedents;
+            m.precedents.forEach((p, idx) => {
+              precedentsHtml += `
+                <div class="precedent-card-btn" onclick="openPrecedentModal(${idx})">
+                  <div class="statute-card-info">
+                    <div class="precedent-card-title">⚖️ ${escapeHtml(p.deka_no || 'Прецедент Верховного Суда')}</div>
+                    <div class="statute-card-desc">${escapeHtml(p.headline || '')}</div>
+                  </div>
+                  <div class="statute-card-action-tag">Изучить акт ↗</div>
+                </div>
+              `;
+            });
+          }
+
+          // Clarifications
+          let clarifsHtml = '';
+          if (m.proactive_clarifications && m.proactive_clarifications.length > 0) {
+            clarifsHtml = `
+              <div class="clarifications-section">
+                <div class="clarifications-title">${pack.clarifyHeader}</div>
+                <div class="clarification-pills">
+            `;
+            m.proactive_clarifications.forEach(q => {
+              clarifsHtml += `
+                <button class="clarification-btn" onclick="askQuick('${escapeHtml(q)}')">
+                  💬 ${escapeHtml(q)}
+                </button>
+              `;
+            });
+            clarifsHtml += `</div></div>`;
+          }
+
+          msgDiv.innerHTML = `
+            <div class="bubble">
+              ${relatedCaseHtml}
+              <div>${renderMarkdown(m.content)}</div>
+              ${statutesHtml}
+              ${precedentsHtml}
+              ${clarifsHtml}
+            </div>
+          `;
+        }
+
+        container.appendChild(msgDiv);
+      });
+
+      container.scrollTop = container.scrollHeight;
+    }
+
+    // ─── LANGUAGE SWITCHER & DROPDOWN (v5.0) ───
+    const LANG_FLAGS = { ru: '🇷🇺', en: '🇬🇧', th: '🇹🇭', zh: '🇨🇳' };
+    const LANG_CODES = { ru: 'RU', en: 'EN', th: 'TH', zh: 'ZH' };
+
+    function toggleLangDropdown(e) {
+      e.stopPropagation();
+      const wrapper = document.getElementById('lang-dropdown-wrapper');
+      wrapper.classList.toggle('open');
+      haptic('selection');
+    }
+
+    function closeLangDropdown() {
+      const wrapper = document.getElementById('lang-dropdown-wrapper');
+      if (wrapper) wrapper.classList.remove('open');
+    }
+
+    document.addEventListener('click', (e) => {
+      const wrapper = document.getElementById('lang-dropdown-wrapper');
+      if (wrapper && !wrapper.contains(e.target)) {
+        closeLangDropdown();
+      }
+    });
+
+    function selectLang(lang) {
+      closeLangDropdown();
+      setLanguage(lang, true);
+    }
+
+    function setLanguage(lang, syncBackend = true) {
+      if (!['en', 'th', 'ru', 'zh'].includes(lang)) lang = 'ru';
+      currentLang = lang;
+      try { localStorage.setItem('consultantplus_thai_lang', lang); } catch(e) {}
+
+      // Update dropdown trigger
+      const flagEl = document.getElementById('lang-flag-current');
+      const codeEl = document.getElementById('lang-code-current');
+      if (flagEl) flagEl.innerText = LANG_FLAGS[lang] || '🇷🇺';
+      if (codeEl) codeEl.innerText = LANG_CODES[lang] || 'RU';
+
+      // Update dropdown active item
+      document.querySelectorAll('.lang-menu-item').forEach(item => {
+        item.classList.toggle('active', item.dataset.lang === lang);
+      });
+
+      const pack = I18N[lang] || I18N.ru;
+      if (document.getElementById('status-indicator')) document.getElementById('status-indicator').innerText = pack.status;
+      if (document.getElementById('chat-input')) document.getElementById('chat-input').placeholder = pack.placeholder;
+      if (document.getElementById('welcome-title')) document.getElementById('welcome-title').innerText = pack.welcomeTitle;
+      if (document.getElementById('welcome-desc')) document.getElementById('welcome-desc').innerText = pack.welcomeDesc;
+      if (document.getElementById('topics-title')) document.getElementById('topics-title').innerText = pack.topicsTitle;
+      if (document.getElementById('drawer-heading')) document.getElementById('drawer-heading').innerText = pack.drawerHeading;
+      if (document.getElementById('btn-new-dialog-text')) document.getElementById('btn-new-dialog-text').innerText = pack.newDialogText;
+      if (document.getElementById('header-new-btn-text')) document.getElementById('header-new-btn-text').innerText = pack.newDialogText;
+      if (document.getElementById('drawer-history-title')) document.getElementById('drawer-history-title').innerText = pack.drawerHistoryTitle;
+
+      updateQuickChips(lang);
+
+      if (syncBackend) {
+        fetch('/api/user/profile', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_id: userId, preferred_language: lang, user_role: 'client' })
+        }).catch(() => {});
+      }
+
+      haptic('selection');
+    }
+
+    async function syncUserProfileLanguage() {
+      try {
+        const resp = await fetch(`/api/user/${userId}/profile?t=${Date.now()}`);
+        if (resp.ok) {
+          const data = await resp.json();
+          const profLang = data.profile && data.profile.preferred_language;
+          if (profLang && ['en', 'th', 'ru', 'zh'].includes(profLang)) {
+            if (profLang !== currentLang) {
+              setLanguage(profLang, false);
+            }
+          }
+        }
+      } catch (e) {
+        console.warn("Profile language sync skipped:", e);
+      }
+    }
+
+    function updateQuickChips(lang) {
+      const container = document.getElementById('quick-chips-container');
+      if (!container) return;
+      const pack = I18N[lang] || I18N.ru;
+      container.innerHTML = '';
+      pack.chips.forEach(c => {
+        const btn = document.createElement('button');
+        btn.className = 'quick-chip';
+        btn.innerHTML = `<span style="font-size: 1.15rem;">${c.icon}</span> <span>${escapeHtml(c.label)}</span>`;
+        btn.onclick = () => askQuick(c.query);
+        container.appendChild(btn);
+      });
+    }
+
+    function askQuick(text) {
+      document.getElementById('chat-input').value = text;
+      sendUserMessage();
+    }
+
+    // ─── MESSAGE SENDING ───
+    async function sendUserMessage() {
+      const input = document.getElementById('chat-input');
+      const query = input.value.trim();
+      if (!query) return;
+
+      input.value = '';
+      haptic('medium');
+
+      const container = document.getElementById('messages-area');
+      const pack = I18N[currentLang] || I18N.ru;
+
+      if (!currentSessionId) {
+        try {
+          const resp = await fetch(`/api/user/${userId}/sessions/new`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ user_id: userId, lang: currentLang })
+          });
+          const d = await resp.json();
+          currentSessionId = d.session_id;
+        } catch (e) {
+          currentSessionId = 'sess_' + Math.random().toString(36).substring(2, 9);
+        }
+      }
+
+      // User Message
+      const userMsg = document.createElement('div');
+      userMsg.className = 'message user';
+      userMsg.innerHTML = `<div class="bubble">${escapeHtml(query)}</div>`;
+      container.appendChild(userMsg);
+      container.scrollTop = container.scrollHeight;
+
+      // Loading Bubble with Dynamic Progress Phases (Req 14)
+      const botMsg = document.createElement('div');
+      botMsg.className = 'message bot';
+      botMsg.innerHTML = `
+        <div class="bubble">
+          <div class="loading-pulse">
+            <div class="loading-dot"></div>
+            <span id="loading-progress-text">${pack.loading}</span>
+          </div>
+        </div>
+      `;
+      container.appendChild(botMsg);
+      container.scrollTop = container.scrollHeight;
+
+      // Prevent duplicate submissions
+      const sendBtn = document.getElementById('send-btn');
+      if (sendBtn) sendBtn.disabled = true;
+      input.disabled = true;
+
+      // Dynamic phase cycle for 28-35s latency
+      const progressPhases = {
+        en: [
+          "Analyzing your legal question...",
+          "Searching Thai statutes, codes & Royal Gazette...",
+          "Auditing statutory grounds & Supreme Court precedents...",
+          "Preparing grounded legal counsel..."
+        ],
+        ru: [
+          "Анализирую ваш юридический вопрос...",
+          "Поиск в кодексах, законах и Королевской газете Таиланда...",
+          "Проверка правовых оснований и прецедентов Верховного Суда...",
+          "Формирование обоснованного ответа..."
+        ],
+        th: [
+          "กำลังวิเคราะห์ประเด็นคำถามทางกฎหมาย...",
+          "กำลังสืบค้นตัวบทกฎหมาย พระราชบัญญัติ และราชกิจจานุเบกษา...",
+          "กำลังตรวจสอบหลักกฎหมายและแนวบรรทัดฐานศาลฎีกา...",
+          "กำลังเรียบเรียงคำตอบที่แม่นยำและถูกต้อง..."
+        ],
+        zh: [
+          "正在分析您的法律问题与事实要件...",
+          "正在检索泰王国成文法典与王家宪报原文...",
+          "正在审核法条依据与最高法院裁判要旨...",
+          "正在生成合规法务建议与实务步骤..."
+        ]
+      };
+      
+      const currentPhases = progressPhases[currentLang] || progressPhases.en;
+      let phaseIdx = 0;
+      const progressTimer = setInterval(() => {
+        phaseIdx++;
+        if (phaseIdx < currentPhases.length) {
+          const txtEl = document.getElementById('loading-progress-text');
+          if (txtEl) txtEl.innerText = currentPhases[phaseIdx];
+        }
+      }, 7000);
+
+      // Call Backend
+      try {
+        const userRole = 'client';
+        const resp = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            user_id: userId,
+            query: query,
+            lang: currentLang,
+            session_id: currentSessionId,
+            user_role: userRole
+          })
+        });
+
+        const data = await resp.json();
+        const respLang = data.lang || currentLang;
+        const curPack = I18N[respLang] || pack;
+
+        if (data.session_id) currentSessionId = data.session_id;
+
+        let relatedCaseHtml = '';
+        if (data.related_case) {
+          relatedCaseHtml = `
+            <div class="related-case-badge">
+              <div class="related-case-icon">💡</div>
+              <div class="related-case-content">
+                <div>${escapeHtml(data.related_case.hint || curPack.relatedCasePrefix)}</div>
+                <span class="related-case-link" onclick="switchToSession('${data.related_case.session_id}')">
+                  ${curPack.switchCaseAction} «${escapeHtml(data.related_case.title || '')}» →
+                </span>
+              </div>
+            </div>
+          `;
+        }
+
+        // Cache for modal clicks
+        currentStatutesCache = data.statutory_references || [];
+        currentPrecedentsCache = data.precedents || [];
+
+        let statutesHtml = '';
+        if (currentStatutesCache.length > 0) {
+          statutesHtml = `
+            <div class="statute-action-box">
+              <div class="statute-action-header">📜 ${curPack.statuteHeader}</div>
+              <div class="statute-cards-grid">
+          `;
+          currentStatutesCache.forEach((s, idx) => {
+            statutesHtml += `
+              <div class="statute-card-btn" onclick="openStatuteModal(${idx})">
+                <div class="statute-card-info">
+                  <div class="statute-card-title">${escapeHtml(s.title || '')}</div>
+                  <div class="statute-card-desc">${escapeHtml(s.section_num ? s.section_num + ' — ' : '')}${escapeHtml(s.snippet || '')}</div>
+                </div>
+                <div class="statute-card-action-tag">${curPack.openDocText}</div>
+              </div>
+            `;
+          });
+          statutesHtml += `</div></div>`;
+        }
+
+        let precedentsHtml = '';
+        if (currentPrecedentsCache.length > 0) {
+          currentPrecedentsCache.forEach((p, idx) => {
+            precedentsHtml += `
+              <div class="precedent-card-btn" onclick="openPrecedentModal(${idx})">
+                <div class="statute-card-info">
+                  <div class="precedent-card-title">⚖️ ${escapeHtml(p.deka_no || 'Прецедент Верховного Суда')}</div>
+                  <div class="statute-card-desc">${escapeHtml(p.headline || '')}</div>
+                </div>
+                <div class="statute-card-action-tag">Изучить акт ↗</div>
+              </div>
+            `;
+          });
+        }
+
+        let clarifsHtml = '';
+        if (data.proactive_clarifications && data.proactive_clarifications.length > 0) {
+          clarifsHtml = `
+            <div class="clarifications-section">
+              <div class="clarifications-title">${curPack.clarifyHeader}</div>
+              <div class="clarification-pills">
+          `;
+          data.proactive_clarifications.forEach(q => {
+            clarifsHtml += `
+              <button class="clarification-btn" onclick="askQuick('${escapeHtml(q)}')">
+                💬 ${escapeHtml(q)}
+              </button>
+            `;
+          });
+          clarifsHtml += `</div></div>`;
+        }
+
+        botMsg.querySelector('.bubble').innerHTML = `
+          ${relatedCaseHtml}
+          <div>${renderMarkdown(data.answer)}</div>
+          ${statutesHtml}
+          ${precedentsHtml}
+          ${clarifsHtml}
+        `;
+
+        clearInterval(progressTimer);
+        if (sendBtn) sendBtn.disabled = false;
+        input.disabled = false;
+        haptic('selection');
+      } catch (err) {
+        clearInterval(progressTimer);
+        if (sendBtn) sendBtn.disabled = false;
+        input.disabled = false;
+        botMsg.querySelector('.bubble').innerHTML = `
+          <div style="color: #e07a5f; padding: 0.5rem 0;">
+            ⚠️ ${pack.networkError}
+            <div style="margin-top: 0.65rem;">
+              <button class="clarification-btn" onclick="askQuick('${escapeHtml(query)}')" style="border-color: #e07a5f; color: #e07a5f;">🔄 Retry Consultation / Повторить</button>
+            </div>
+          </div>
+        `;
+      }
+
+      container.scrollTop = container.scrollHeight;
+    }
+
+    // ─── MARKDOWN RENDERER ───
+    function renderMarkdown(md) {
+      if (!md) return '';
+      let out = md;
+      out = out.replace(/### (.*?)\n/g, '<h3>$1</h3>');
+      out = out.replace(/#### (.*?)\n/g, '<h4>$1</h4>');
+      out = out.replace(/##### (.*?)\n/g, '<h5 style="color: var(--text-main); margin: 0.5rem 0 0.3rem 0;">$1</h5>');
+      out = out.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+      out = out.replace(/\*(.*?)\*/g, '<em>$1</em>');
+      out = out.replace(/`([^`]+)`/g, '<code style="background: rgba(255,255,255,0.08); padding: 0.15rem 0.35rem; border-radius: 4px; font-size: 0.85rem;">$1</code>');
+      out = out.replace(/\n\n/g, '<p style="margin: 0.4rem 0;"></p>');
+      out = out.replace(/\n\* /g, '<br>• ');
+      out = out.replace(/\n1\. /g, '<br>1. ');
+      out = out.replace(/\n2\. /g, '<br>2. ');
+      out = out.replace(/\n3\. /g, '<br>3. ');
+      out = out.replace(/\n4\. /g, '<br>4. ');
+      out = out.replace(/\n5\. /g, '<br>5. ');
+      out = out.replace(/---/g, '<hr style="border: none; border-top: 1px solid var(--surface-border); margin: 0.8rem 0;">');
+      return out;
+    }
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+    }
+
+    // ─── INIT ───
+    const initialLang = (function() {
+      try {
+        const stored = localStorage.getItem('consultantplus_thai_lang');
+        if (stored && ['en', 'th', 'ru', 'zh'].includes(stored)) return stored;
+      } catch(e) {}
+      return 'en';
+    })();
+
+    setLanguage(initialLang, false);
+    initTelegram();
+    syncUserProfileLanguage();
+  
+window.addEventListener('DOMContentLoaded', () => {
+  if (window.location.hash === '#calculator') {
+    setTimeout(() => { if (typeof openCalculatorModal === 'function') openCalculatorModal(); }, 300);
+  }
+});
+window.addEventListener('hashchange', () => {
+  if (window.location.hash === '#calculator') {
+    if (typeof openCalculatorModal === 'function') openCalculatorModal();
+  }
+});
+
+</script>
+
+  <!-- UNIVERSAL THAI LEGAL & TAX CALCULATOR MODAL -->
+  <div class="calc-modal-backdrop" id="calc-modal-backdrop" onclick="closeCalculatorModal(event)">
+    <div class="calc-modal" id="calc-modal" onclick="event.stopPropagation()">
+      <div class="calc-modal-header">
+        <h3>⚡ Экспресс-калькулятор Таиланда (Consultant+)</h3>
+        <button class="calc-modal-close" onclick="closeCalculatorModalDirect()">&times;</button>
+      </div>
+      <div class="calc-tabs">
+        <button class="calc-tab-btn active" onclick="switchCalcTab('realestate')">🏢 Недвижимость</button>
+        <button class="calc-tab-btn" onclick="switchCalcTab('tax')">💰 Налог P.161/162</button>
+        <button class="calc-tab-btn" onclick="switchCalcTab('severance')">⚖️ LPA 118 Выходное пособие</button>
+        <button class="calc-tab-btn" onclick="switchCalcTab('corporate')">💼 Компания и квоты 4:1</button>
+        <button class="calc-tab-btn" onclick="switchCalcTab('visa')">🛂 Подбор визы</button>
+      </div>
+      <div class="calc-body">
+        <!-- TAB 1: REAL ESTATE -->
+        <div id="calc-pane-realestate" class="calc-pane">
+          <div class="calc-form-group">
+            <label>Стоимость объекта (THB):</label>
+            <input type="number" id="re-price" class="calc-input" value="5000000" step="100000" oninput="runRealEstateCalc()">
+          </div>
+          <div style="display: flex; gap: 12px;">
+            <div class="calc-form-group" style="flex: 1;">
+              <label>Тип собственности:</label>
+              <select id="re-ownership" class="calc-select" onchange="runRealEstateCalc()">
+                <option value="FREEHOLD">Foreign Freehold (100% Чанот)</option>
+                <option value="LEASEHOLD">Leasehold (Аренда 30 лет)</option>
+              </select>
+            </div>
+            <div class="calc-form-group" style="flex: 1;">
+              <label>Срок владения продавцом:</label>
+              <select id="re-years" class="calc-select" onchange="runRealEstateCalc()">
+                <option value="1">Менее 5 лет (SBT 3.3%)</option>
+                <option value="6">Более 5 лет (Stamp 0.5%)</option>
+              </select>
+            </div>
+          </div>
+          <div class="calc-result-box" id="re-result-box">
+            <!-- Dynamic output -->
+          </div>
+          <button class="calc-paste-btn" onclick="pasteCalcToChat('re')">📋 Вставить расчет в чат с юристом</button>
+        </div>
+
+        <!-- TAB 2: FOREIGN REMITTANCE TAX -->
+        <div id="calc-pane-tax" class="calc-pane" style="display: none;">
+          <div class="calc-form-group">
+            <label>Сумма ввозимого в Таиланд дохода (THB):</label>
+            <input type="number" id="tax-amount" class="calc-input" value="1500000" step="50000" oninput="runTaxCalc()">
+          </div>
+          <div style="display: flex; gap: 12px;">
+            <div class="calc-form-group" style="flex: 1;">
+              <label>Дней в Таиланде за календарный год:</label>
+              <input type="number" id="tax-days" class="calc-input" value="185" oninput="runTaxCalc()">
+            </div>
+            <div class="calc-form-group" style="flex: 1;">
+              <label>Доход накоплен до 1 января 2024 г.?</label>
+              <select id="tax-prior2024" class="calc-select" onchange="runTaxCalc()">
+                <option value="false">Нет (доход 2024+ года)</option>
+                <option value="true">Да (P.162 Grandfathered - 0% налог)</option>
+              </select>
+            </div>
+          </div>
+          <div class="calc-form-group">
+            <label>Налог, уже уплаченный за рубежом (DTA Tax Credit, THB):</label>
+            <input type="number" id="tax-dta" class="calc-input" value="0" step="10000" oninput="runTaxCalc()">
+          </div>
+          <div class="calc-result-box" id="tax-result-box">
+            <!-- Dynamic output -->
+          </div>
+          <button class="calc-paste-btn" onclick="pasteCalcToChat('tax')">📋 Вставить налоговый расчет в диалог</button>
+        </div>
+
+        <!-- TAB 3: SEVERANCE PAY (LPA 118) -->
+        <div id="calc-pane-severance" class="calc-pane" style="display: none;">
+          <div class="calc-form-group">
+            <label>Текущая месячная зарплата сотрудника (THB):</label>
+            <input type="number" id="sev-salary" class="calc-input" value="60000" step="5000" oninput="runSeveranceCalc()">
+          </div>
+          <div class="calc-form-group">
+            <label>Стаж непрерывной работы в компании:</label>
+            <select id="sev-tenure" class="calc-select" onchange="runSeveranceCalc()">
+              <option value="3">Менее 120 дней (0 дней пособия)</option>
+              <option value="8">от 120 дней до 1 года (30 дней зарплаты)</option>
+              <option value="24" selected>от 1 года до 3 лет (90 дней зарплаты)</option>
+              <option value="48">от 3 до 6 лет (180 дней зарплаты)</option>
+              <option value="96">от 6 до 10 лет (240 дней зарплаты)</option>
+              <option value="180">от 10 до 20 лет (300 дней зарплаты)</option>
+              <option value="250">более 20 лет (400 дней зарплаты)</option>
+            </select>
+          </div>
+          <div class="calc-result-box" id="sev-result-box">
+            <!-- Dynamic output -->
+          </div>
+          <button class="calc-paste-btn" onclick="pasteCalcToChat('sev')">📋 Вставить расчет пособия в чат</button>
+        </div>
+
+        <!-- TAB 4: CORPORATE & 4:1 QUOTA -->
+        <div id="calc-pane-corporate" class="calc-pane" style="display: none;">
+          <div class="calc-form-group">
+            <label>Количество иностранных сотрудников / Work Permit:</label>
+            <input type="number" id="corp-expats" class="calc-input" value="1" min="1" max="10" oninput="runCorpCalc()">
+          </div>
+          <div class="calc-form-group">
+            <label>Наличие сертификата Совета по инвестициям (BOI):</label>
+            <select id="corp-boi" class="calc-select" onchange="runCorpCalc()">
+              <option value="false">Стандартная тайская компания (Co., Ltd. 51/49)</option>
+              <option value="true">Компания с поддержкой BOI (100% иностранное владение)</option>
+            </select>
+          </div>
+          <div class="calc-result-box" id="corp-result-box">
+            <!-- Dynamic output -->
+          </div>
+          <button class="calc-paste-btn" onclick="pasteCalcToChat('corp')">📋 Вставить расчет квот в чат</button>
+        </div>
+
+        <!-- TAB 5: VISA MATCH -->
+        <div id="calc-pane-visa" class="calc-pane" style="display: none;">
+          <div class="calc-form-group">
+            <label>Доступный стартовый бюджет / депозит (USD):</label>
+            <input type="number" id="visa-budget" class="calc-input" value="15000" step="5000" oninput="runVisaCalc()">
+          </div>
+          <div class="calc-form-group">
+            <label>Ежемесячный доход (USD):</label>
+            <input type="number" id="visa-income" class="calc-input" value="3500" step="500" oninput="runVisaCalc()">
+          </div>
+          <div class="calc-form-group">
+            <label>Планируете ли работать на тайские компании внутри страны?</label>
+            <select id="visa-workth" class="calc-select" onchange="runVisaCalc()">
+              <option value="false">Нет (только зарубежные клиенты / фриланс / инвестиции)</option>
+              <option value="true">Да (нужно тайское юрлицо и местный Work Permit)</option>
+            </select>
+          </div>
+          <div class="calc-result-box" id="visa-result-box">
+            <!-- Dynamic output -->
+          </div>
+          <button class="calc-paste-btn" onclick="pasteCalcToChat('visa')">📋 Вставить рекомендацию по визам в чат</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>
