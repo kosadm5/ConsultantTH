@@ -16,13 +16,25 @@ from fastembed import TextEmbedding
 from core.adapters.base import BaseKnowledgeAdapter
 from core.models import EvidenceCandidate, TemporalValidity
 
-PG_CONFIG = {
-    "dbname": "thailaw",
-    "user": "admin",
-    "password": "Privet2020!",
-    "host": "localhost",
-    "port": 5433
-}
+_pg_url = os.getenv("POSTGRES_URL")
+if _pg_url:
+    from urllib.parse import urlparse
+    _u = urlparse(_pg_url)
+    PG_CONFIG = {
+        "dbname": _u.path.lstrip("/") or "thailaw",
+        "user": _u.username or "admin",
+        "password": _u.password or "Privet2020!",
+        "host": _u.hostname or "th-postgres",
+        "port": _u.port or 5432
+    }
+else:
+    PG_CONFIG = {
+        "dbname": os.getenv("POSTGRES_DB", "thailaw"),
+        "user": os.getenv("POSTGRES_USER", "admin"),
+        "password": os.getenv("POSTGRES_PASSWORD", "Privet2020!"),
+        "host": os.getenv("POSTGRES_HOST", "th-postgres"),
+        "port": int(os.getenv("POSTGRES_PORT", 5432))
+    }
 
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6433")
 QDRANT_COLLECTION = "thai_legal_chunks_hybrid"

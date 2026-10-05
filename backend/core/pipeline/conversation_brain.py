@@ -1,6 +1,6 @@
 """
 backend/core/pipeline/conversation_brain.py
-Consultant+ Core Engine 2.0 — Multilingual Conversation Brain.
+Consultant+ Core Engine 2.0 — Multilingual Conversation Brain with Topic Relation & Adaptive Retrieval Policy.
 Understands user input across Russian, English, Thai, and mixed code-switching.
 Extracts canonical, language-independent facts vs assumptions, detects corrections,
 identifies missing legal information, and outputs explicit language detection.
@@ -49,6 +49,20 @@ TASKS:
    - "ANSWER_AND_CLARIFY": Broad exploratory question needing structured overview + 1 high-yield clarifying question.
    - "CLARIFY_FIRST": Action legally perilous without immediate clarification.
 
+5. Topic Relation:
+   - "NEW_TOPIC": user transitioned to a different legal matter (e.g. from real estate purchase to employee termination or company tax).
+   - "CONTINUE": user is continuing the existing matter / logical follow-up question ("What if through a Thai company?", "What are the registration fees?").
+   - "MODIFY_FACT": user is correcting, overriding, or negating a previously stated fact ("No, actually it is...", "I am from Kazakhstan, not Russia").
+   - "CLARIFY": user is answering a specific question asked by the consultant.
+   - "RETURN_TO_TOPIC": user explicitly returns to an earlier discussed matter ("Let's go back to the villa...", "Regarding the first question...").
+
+6. Retrieval Decision:
+   - "DIRECT_ANSWER": greeting, capabilities, or self-contained legal definition.
+   - "CONTEXT_ONLY": follow-up fully covered by verified rules already in the case dossier.
+   - "REUSE_EVIDENCE": ongoing matter where existing retrieved Thai statutes remain directly relevant and sufficient.
+   - "RETRIEVE": new legal topic or new statutory search needed in Thai KB.
+   - "RETRIEVE_WITH_EXPANSION": complex multi-statute scenario.
+
 CRITICAL RULE: Do NOT hardcode or output specific statutory section numbers (like Section 19 or Section 538).
 Output strictly JSON:
 {
@@ -59,6 +73,8 @@ Output strictly JSON:
   "primary_intent": "property_acquisition",
   "confidence": 0.95,
   "matter_type": "property_acquisition",
+  "topic_relation": "NEW_TOPIC",
+  "retrieval_decision": "RETRIEVE",
   "extracted_facts": [
     {"entity": "property_type", "value": "villa", "fact_type": "USER_FACT", "confidence": 1.0}
   ],
@@ -115,10 +131,24 @@ NEW USER MESSAGE ({user_input.input_type}):
                 res["detected_language"] = script_lang
             if not res.get("response_language"):
                 res["response_language"] = res["detected_language"]
+            if not res.get("topic_relation"):
+                res["topic_relation"] = "CONTINUE" if case_state.turn_index > 0 else "NEW_TOPIC"
+            if not res.get("retrieval_decision"):
+                res["retrieval_decision"] = "RETRIEVE"
             return res
         except Exception as e:
             print(f"ConversationBrain fallback due to error: {e}")
             lang = user_input.language_hint or script_lang
+            lower_txt = user_input.raw_text.lower()
+            topic_rel = "NEW_TOPIC"
+            if case_state.turn_index > 0:
+                if any(w in lower_txt for w in ["нет,", "ошибся", "no,", "actually", "ไม่ใช่"]):
+                    topic_rel = "MODIFY_FACT"
+                elif any(w in lower_txt for w in ["вернемся", "let's go back", "กลับไป"]):
+                    topic_rel = "RETURN_TO_TOPIC"
+                else:
+                    topic_rel = "CONTINUE"
+
             return {
                 "detected_language": lang,
                 "response_language": lang,
@@ -127,6 +157,8 @@ NEW USER MESSAGE ({user_input.input_type}):
                 "primary_intent": "legal_inquiry",
                 "confidence": 0.7,
                 "matter_type": case_state.matter_type or "general_inquiry",
+                "topic_relation": topic_rel,
+                "retrieval_decision": "RETRIEVE",
                 "extracted_facts": [],
                 "missing_unknowns": [],
                 "response_mode": "ANSWER_AND_CLARIFY",

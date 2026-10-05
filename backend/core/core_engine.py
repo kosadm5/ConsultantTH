@@ -2,8 +2,8 @@
 backend/core/core_engine.py
 Consultant+ Core Engine 2.0 — Master Multilingual Legal AI Orchestrator.
 Seamlessly unifies RU / EN / TH / Mixed inputs into a language-independent CaseState,
-executes issue-based multilingual retrieval, performs two-pass reasoning, and composes
-the authoritative response strictly in the user's detected response_language.
+executes issue-based multilingual retrieval with evidence caching, performs two-pass reasoning,
+and composes the authoritative response strictly in the user's detected response_language.
 """
 
 import time
@@ -29,7 +29,6 @@ from core.pipeline.reasoning_engine import TwoPassReasoningEngine
 from core.pipeline.claim_validator import ClaimGroundingValidator
 from core.pipeline.response_composer import ResponseComposer
 from core.pipeline.degraded_mode import SafeDegradedHandler
-
 
 
 def detect_matter_type(text: str) -> str:
@@ -152,6 +151,28 @@ class ConsultantPlusCoreEngine:
             response_mode_raw = brain_analysis.get("response_mode", "ANSWER_AND_CLARIFY")
             response_mode = ResponseMode(response_mode_raw) if response_mode_raw in ResponseMode.__members__ else ResponseMode.ANSWER_AND_CLARIFY
 
+            topic_relation = brain_analysis.get("topic_relation", "CONTINUE" if case_state.turn_index > 0 else "NEW_TOPIC")
+            retrieval_decision = brain_analysis.get("retrieval_decision", "RETRIEVE")
+
+            # Handle Topic Switching
+            if topic_relation == "NEW_TOPIC" and case_state.turn_index > 0:
+                print(f"[TopicSwitch] Creating isolated case state for new matter: {current_detected_matter}")
+                case_state = self.case_manager.get_or_create_case(
+                    user_id=user_id,
+                    case_id=f"case_{turn_input.session_id}_{current_detected_matter}_{int(time.time())}",
+                    matter_type=current_detected_matter
+                )
+                current_turn = case_state.turn_index + 1
+            elif topic_relation == "RETURN_TO_TOPIC":
+                print(f"[TopicSwitch] Returning to prior topic: {current_detected_matter}")
+                for prev_cid in profile.active_case_ids:
+                    if prev_cid in self.case_manager.cases:
+                        prev_c = self.case_manager.cases[prev_cid]
+                        if prev_c.matter_type == current_detected_matter:
+                            case_state = prev_c
+                            current_turn = case_state.turn_index + 1
+                            break
+
             # Update Case State with new canonical facts and active matter
             case_state = self.case_manager.apply_turn_update(
                 case_id=case_state.case_id,
@@ -163,28 +184,41 @@ class ConsultantPlusCoreEngine:
                 matter_type=case_state.matter_type
             )
 
-            # 5. Stage: Issue-Based Query Planner (Multilingual EN/TH search generation)
-            with self.trace_logger.measure_stage("query_planning"):
-                query_plan = self.query_planner.plan_queries(turn_input.raw_text, case_state)
-            self.trace_logger.record_query_plan(query_plan)
+            # Check Evidence Cache:
+            cached_ev = getattr(case_state, "_cached_evidence", None)
+            if retrieval_decision in ("CONTEXT_ONLY", "REUSE_EVIDENCE") and cached_ev and len(cached_ev) > 0:
+                print(f"[EvidenceCache] Reusing {len(cached_ev)} evidence chunks for {case_state.matter_type}")
+                evidence_chunks = cached_ev
+                query_plan = getattr(case_state, "_cached_query_plan", None)
+                if not query_plan:
+                    with self.trace_logger.measure_stage("query_planning"):
+                        query_plan = self.query_planner.plan_queries(turn_input.raw_text, case_state)
+            else:
+                # 5. Stage: Issue-Based Query Planner (Multilingual EN/TH search generation)
+                with self.trace_logger.measure_stage("query_planning"):
+                    query_plan = self.query_planner.plan_queries(turn_input.raw_text, case_state)
+                self.trace_logger.record_query_plan(query_plan)
 
-            # 6. Stage: Master Hybrid Retrieval + RRF + Reranking
-            with self.trace_logger.measure_stage("hybrid_retrieval_and_rerank"):
-                evidence_chunks, discarded_reasons, counts = self.retriever.retrieve(
-                    query_plan=query_plan,
-                    top_evidence=8,
-                    event_year=2026
+                # 6. Stage: Master Hybrid Retrieval + RRF + Reranking
+                with self.trace_logger.measure_stage("hybrid_retrieval_and_rerank"):
+                    evidence_chunks, discarded_reasons, counts = self.retriever.retrieve(
+                        query_plan=query_plan,
+                        top_evidence=8,
+                        event_year=2026
+                    )
+                
+                self.trace_logger.record_retrieval_counts(
+                    dense=counts["dense_count"],
+                    lexical=counts["lexical_count"],
+                    graph=counts["graph_count"],
+                    rrf=counts["rrf_pool_count"],
+                    reranked=counts["selected_evidence_count"]
                 )
-            
-            self.trace_logger.record_retrieval_counts(
-                dense=counts["dense_count"],
-                lexical=counts["lexical_count"],
-                graph=counts["graph_count"],
-                rrf=counts["rrf_pool_count"],
-                reranked=counts["selected_evidence_count"]
-            )
-            for cid, reason in discarded_reasons.items():
-                self.trace_logger.record_chunk_rejection(cid, reason)
+                for cid, reason in discarded_reasons.items():
+                    self.trace_logger.record_chunk_rejection(cid, reason)
+
+                case_state._cached_evidence = evidence_chunks
+                case_state._cached_query_plan = query_plan
 
             # Check if retrieval yielded 0 evidence -> Safe Degraded Mode
             if not evidence_chunks:

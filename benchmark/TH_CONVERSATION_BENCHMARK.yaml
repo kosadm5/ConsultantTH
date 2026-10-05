@@ -1,0 +1,425 @@
+version: "1.0.0"
+jurisdiction: "TH"
+description: "Consul+ TH Conversation Intelligence Benchmark — 20 Multi-Turn Legal Scenarios"
+
+scenarios:
+  # Scenario 1 (Type A: Progressive Clarification - Property Acquisition)
+  - id: "TH_CONV_01"
+    type: "progressive_clarification"
+    topic: "real_estate_acquisition"
+    turns:
+      - turn: 1
+        user_message: "Здравствуйте! Я планирую купить недвижимость в Таиланде."
+        expected_intent: "property_acquisition"
+        expected_topic_relation: "NEW_TOPIC"
+        expect_clarification_max_count: 1
+      - turn: 2
+        user_message: "Я хочу купить виллу на Пхукете для сдачи в аренду туристам."
+        expected_topic_relation: "CONTINUE"
+        expect_remembered_facts:
+          property_type: "villa"
+          location: "Phuket"
+          purpose: "short_term_rental_to_tourists"
+      - turn: 3
+        user_message: "Как иностранец может владеть землей под виллой?"
+        expected_topic_relation: "CONTINUE"
+        expected_legal_norms: ["Land Code B.E. 2497", "Section 538", "Section 1410"]
+      - turn: 4
+        user_message: "А посуточная аренда требует лицензии отеля?"
+        expected_topic_relation: "CONTINUE"
+        expected_legal_norms: ["Hotel Act B.E. 2547"]
+        expect_next_action: true
+
+  # Scenario 2 (Type B: User Correction - Nationality & Condominium Quota)
+  - id: "TH_CONV_02"
+    type: "correction"
+    topic: "condominium_quota"
+    turns:
+      - turn: 1
+        user_message: "Я гражданин РФ, выбираю кондоминиум в Паттайе."
+        expected_topic_relation: "NEW_TOPIC"
+        expect_remembered_facts:
+          nationality: "Russian"
+          location: "Pattaya"
+      - turn: 2
+        user_message: "Могу ли я оформить квартиру в полную собственность (Foreign Freehold)?"
+        expected_topic_relation: "CONTINUE"
+        expected_legal_norms: ["Condominium Act B.E. 2522", "Section 19"]
+      - turn: 3
+        user_message: "Нет, я ошибся: у меня паспорт Казахстана, а не РФ."
+        expected_topic_relation: "MODIFY_FACT"
+        superseded_facts:
+          nationality: "Russian"
+        active_facts:
+          nationality: "Kazakhstani"
+      - turn: 4
+        user_message: "Меняются ли правила перевода валюты FET для граждан Казахстана?"
+        expected_topic_relation: "CONTINUE"
+        expected_legal_norms: ["Section 19", "FET Form"]
+        forbidden_facts: ["Russian"]
+
+  # Scenario 3 (Type C: Topic Switch & Return - Property to Labor to Property)
+  - id: "TH_CONV_03"
+    type: "topic_switch"
+    topic: "property_to_labor_switch"
+    turns:
+      - turn: 1
+        user_message: "Какой максимальный срок долгосрочной аренды (leasehold) земли в Таиланде?"
+        expected_topic_relation: "NEW_TOPIC"
+        expected_legal_norms: ["Civil and Commercial Code Section 538", "30 years"]
+      - turn: 2
+        user_message: "Обязательна ли регистрация такого договора в Land Department?"
+        expected_topic_relation: "CONTINUE"
+        expected_legal_norms: ["Section 538"]
+      - turn: 3
+        user_message: "Теперь другой вопрос: как оформить увольнение сотрудника-тайца в нашей компании?"
+        expected_topic_relation: "NEW_TOPIC"
+        expected_legal_norms: ["Labor Protection Act B.E. 2541", "Section 118"]
+        forbidden_carryover: ["leasehold", "земля", "Land Department"]
+      - turn: 4
+        user_message: "Вернемся к аренде земли: а если заключить договор на 30 лет с условием продления еще на 30 лет?"
+        expected_topic_relation: "RETURN_TO_TOPIC"
+        expected_legal_norms: ["Section 538", "San Deka"]
+
+  # Scenario 4 (Type D: Implicit Continuation - Corporate Company Formation)
+  - id: "TH_CONV_04"
+    type: "implicit_continuation"
+    topic: "corporate_fba"
+    turns:
+      - turn: 1
+        user_message: "Хочу открыть тайскую компанию (Co., Ltd.) для ведения бизнеса в Бангкоке."
+        expected_topic_relation: "NEW_TOPIC"
+        expected_legal_norms: ["Foreign Business Act B.E. 2542", "51% Thai"]
+      - turn: 2
+        user_message: "А если оформить тайских партнеров как номиналов?"
+        expected_topic_relation: "CONTINUE"
+        expected_legal_norms: ["Section 36", "Section 37", "уголовная ответственность"]
+        expect_risk_warning: true
+      - turn: 3
+        user_message: "Какое наказание предусмотрено за использование номинальных акционеров?"
+        expected_topic_relation: "CONTINUE"
+        expected_legal_norms: ["Section 36", "лишение свободы до 3 лет", "штраф"]
+      - turn: 4
+        user_message: "Какие законные альтернативы существуют без использования номиналов?"
+        expected_topic_relation: "CONTINUE"
+        expected_legal_norms: ["BOI", "Foreign Business License", "Treaty of Amity"]
+
+  # Scenario 5 (Type E: Multilingual Inquiry - Thai Law in English & Thai)
+  - id: "TH_CONV_05"
+    type: "multilingual"
+    topic: "tax_remittance"
+    turns:
+      - turn: 1
+        user_message: "What is the new personal income tax rule under Revenue Department Order Paw 161/2566?"
+        expected_language: "en"
+        expected_topic_relation: "NEW_TOPIC"
+        expected_legal_norms: ["Section 41", "Paw. 161/2566", "180 days"]
+      - turn: 2
+        user_message: "How does Paw 162/2567 protect savings earned before January 1, 2024?"
+        expected_language: "en"
+        expected_topic_relation: "CONTINUE"
+        expected_legal_norms: ["Paw. 162/2567"]
+      - turn: 3
+        user_message: "ถ้าผมอยู่อาศัยในไทยเกิน 180 วันต่อปี ผมต้องยื่นแบบ ภ.ง.ด.90 หรือไม่?"
+        expected_language: "th"
+        expected_topic_relation: "CONTINUE"
+        expected_legal_norms: ["มาตรา 41", "ป.161/2566"]
+      - turn: 4
+        user_message: "Перейдем на русский: какие подтверждающие документы нужно предоставить тайской налоговой?"
+        expected_language: "ru"
+        expected_topic_relation: "CONTINUE"
+        expect_next_action: true
+
+  # Scenario 6 (Type F: Insufficient Info / Single Follow-Up)
+  - id: "TH_CONV_06"
+    type: "insufficient_info"
+    topic: "marriage_prenup"
+    turns:
+      - turn: 1
+        user_message: "Я женюсь на гражданке Таиланда, хотим заключить брачный договор."
+        expected_topic_relation: "NEW_TOPIC"
+        expect_clarification_max_count: 1
+      - turn: 2
+        user_message: "Где и в какой момент должен быть зарегистрирован брачный договор (prenuptial agreement)?"
+        expected_topic_relation: "CONTINUE"
+        expected_legal_norms: ["Civil and Commercial Code Section 1466", "Amphur"]
+      - turn: 3
+        user_message: "Что произойдет с договором, если мы подпишем его после официальной регистрации брака?"
+        expected_topic_relation: "CONTINUE"
+        expected_legal_norms: ["Section 1466", "ничтожность", "void"]
+      - turn: 4
+        user_message: "Может ли тайская супруга купить землю на свое имя, если деньги дал муж-иностранец?"
+        expected_topic_relation: "CONTINUE"
+        expected_legal_norms: ["Land Code", "Sin Somros", "Sin Suan Tua", "Land Office Letter of Confirmation"]
+
+  # Scenario 7 (Type G: Context Reuse / Land Rights)
+  - id: "TH_CONV_07"
+    type: "context_reuse"
+    topic: "superficies_usufruct"
+    turns:
+      - turn: 1
+        user_message: "Что такое право суперфиция (right of superficies) по тайскому праву?"
+        expected_topic_relation: "NEW_TOPIC"
+        expected_legal_norms: ["Civil and Commercial Code Section 1410"]
+      - turn: 2
+        user_message: "На какой максимальный срок оно может быть установлено?"
+        expected_topic_relation: "CONTINUE"
+        expected_legal_norms: ["Section 1412", "30 years", "lifetime"]
+      - turn: 3
+        user_message: "Может ли суперфиций наследоваться наследниками иностранца?"
+        expected_topic_relation: "CONTINUE"
+        expected_legal_norms: ["Section 1411"]
+      - turn: 4
+        user_message: "А чем узуфрукт (usufruct) принципиально отличается от суперфиция?"
+        expected_topic_relation: "CONTINUE"
+        expected_legal_norms: ["Section 1417"]
+
+  # Scenario 8 (Type H: Evidence Invalidation - Condominium to Land)
+  - id: "TH_CONV_08"
+    type: "evidence_invalidation"
+    topic: "condominium_to_land_change"
+    turns:
+      - turn: 1
+        user_message: "Я покупаю кондоминиум в Бангкоке, какие налоги при передаче права собственности?"
+        expected_topic_relation: "NEW_TOPIC"
+        expected_legal_norms: ["Transfer Fee 2%", "Special Business Tax 3.3%", "Withholding Tax"]
+      - turn: 2
+        user_message: "Нет, планы изменились: мы покупаем не квартиру в кондо, а земельный участок с домом."
+        expected_topic_relation: "MODIFY_FACT"
+        expected_legal_norms: ["Land Code B.E. 2497", "Section 86"]
+        forbidden_rules: ["Foreign Freehold 49% quota"]
+      - turn: 3
+        user_message: "Может ли иностранец владеть самим зданием дома отдельно от земли?"
+        expected_topic_relation: "CONTINUE"
+        expected_legal_norms: ["Section 1410", "Building ownership"]
+      - turn: 4
+        user_message: "Какой налог на землю и строения (Land and Building Tax) нужно будет платить ежегодно?"
+        expected_topic_relation: "CONTINUE"
+        expected_legal_norms: ["Land and Building Tax Act B.E. 2562"]
+
+  # Scenario 9 (Type I: Broad Legal Question - Foreign Business License)
+  - id: "TH_CONV_09"
+    type: "broad_question"
+    topic: "foreign_business_license"
+    turns:
+      - turn: 1
+        user_message: "Какие виды деятельности входят в Список 3 (List 3) Закона об иностранном бизнесе FBA?"
+        expected_topic_relation: "NEW_TOPIC"
+        expected_legal_norms: ["Foreign Business Act B.E. 2542", "List 3"]
+        forbidden_response: ["INSUFFICIENT_EVIDENCE"]
+      - turn: 2
+        user_message: "Относится ли оказание консультационных услуг к Списку 3?"
+        expected_topic_relation: "CONTINUE"
+        expected_legal_norms: ["List 3(21)", "Service business"]
+      - turn: 3
+        user_message: "Каков минимальный уставный капитал для получения лицензии FBL по Списку 3?"
+        expected_topic_relation: "CONTINUE"
+        expected_legal_norms: ["Section 14", "3 million THB"]
+      - turn: 4
+        user_message: "Какие документы подаются в Департамент развития бизнеса (DBD)?"
+        expected_topic_relation: "CONTINUE"
+        expect_next_action: true
+
+  # Scenario 10 (Type J: Fake Law Probe - Thai Land Citizenship)
+  - id: "TH_CONV_10"
+    type: "hallucination_resistance"
+    topic: "fake_law_probe"
+    turns:
+      - turn: 1
+        user_message: "Правда ли, что с 2025 года любой иностранец может свободно купить 5 рай земли без ограничений?"
+        expected_topic_relation: "NEW_TOPIC"
+        forbidden_affirmation: true
+        expected_legal_norms: ["Land Code Section 86", "строгий запрет"]
+      - turn: 2
+        user_message: "А разрешает ли закон об инвестициях BOI владение землей для иностранной компании?"
+        expected_topic_relation: "CONTINUE"
+        expected_legal_norms: ["Investment Promotion Act Section 27"]
+      - turn: 3
+        user_message: "Что обязана сделать компания с землей, если BOI статус будет аннулирован?"
+        expected_topic_relation: "CONTINUE"
+        expected_legal_norms: ["Section 27", "продажа в течение 1 года"]
+      - turn: 4
+        user_message: "Кто в Таиланде имеет право выдавать разрешение на владение землей по BOI?"
+        expected_topic_relation: "CONTINUE"
+        expected_legal_norms: ["Board of Investment", "Land Department"]
+
+  # Scenario 11: Labor dismissal and severance
+  - id: "TH_CONV_11"
+    type: "labor_dismissal"
+    topic: "labor_law"
+    turns:
+      - turn: 1
+        user_message: "Сотрудник проработал в тайской компании 4 года, мы хотим его уволить без вины."
+        expected_legal_norms: ["Labor Protection Act Section 118"]
+      - turn: 2
+        user_message: "Каков размер обязательного выходного пособия (severance pay) за 4 года стажа?"
+        expected_legal_norms: ["Section 118", "180 days wages"]
+      - turn: 3
+        user_message: "За сколько дней необходимо направить уведомление об увольнении (advance notice)?"
+        expected_legal_norms: ["Section 17", "one wage payment period"]
+      - turn: 4
+        user_message: "Может ли работник подать иск о несправедливом увольнении (unfair dismissal) в Labor Court?"
+        expected_legal_norms: ["Labor Court", "Unfair Dismissal"]
+
+  # Scenario 12: DTV (Destination Thailand Visa)
+  - id: "TH_CONV_12"
+    type: "visa_immigration"
+    topic: "immigration_law"
+    turns:
+      - turn: 1
+        user_message: "Какие требования предъявляются к заявителю на визу DTV (Destination Thailand Visa)?"
+        expected_legal_norms: ["500,000 THB", "remote worker", "soft power"]
+      - turn: 2
+        user_message: "Какой срок действия визы DTV и сколько дней можно находиться за один въезд?"
+        expected_legal_norms: ["5 years", "180 days"]
+      - turn: 3
+        user_message: "Можно ли продлить пребывание еще на 180 дней без выезда из страны?"
+        expected_legal_norms: ["Immigration Bureau", "extension 180 days"]
+      - turn: 4
+        user_message: "Дает ли DTV право работать на местную тайскую компанию без Work Permit?"
+        expected_legal_norms: ["Alien Working Management Emergency Decree", "запрещено"]
+
+  # Scenario 13: Inheritance and wills in Thailand
+  - id: "TH_CONV_13"
+    type: "inheritance"
+    topic: "estate_law"
+    turns:
+      - turn: 1
+        user_message: "У меня кондоминиум на Пхукете, как иностранцу составить завещание по тайскому праву?"
+        expected_legal_norms: ["Civil and Commercial Code Section 1656"]
+      - turn: 2
+        user_message: "Сколько свидетелей должно присутствовать при подписании обычного письменного завещания?"
+        expected_legal_norms: ["Section 1656", "2 witnesses"]
+      - turn: 3
+        user_message: "Могут ли наследники быть свидетелями при удостоверении завещания?"
+        expected_legal_norms: ["Section 1653", "запрещено"]
+      - turn: 4
+        user_message: "Каков порядок вступления в наследство через суд (probate process)?"
+        expected_legal_norms: ["Court appointed executor", "Public Prosecutor"]
+
+  # Scenario 14: LTR (Long-Term Resident) Visa
+  - id: "TH_CONV_14"
+    type: "visa_immigration"
+    topic: "immigration_law"
+    turns:
+      - turn: 1
+        user_message: "Какие категории предусмотрены для 10-летней визы LTR в Таиланде?"
+        expected_legal_norms: ["Wealthy Global Citizen", "Wealthy Pensioner", "Work-from-Thailand Professional", "High-Skilled Professional"]
+      - turn: 2
+        user_message: "Какая льготная ставка подоходного налога применяется для категории High-Skilled Professional?"
+        expected_legal_norms: ["17% flat tax rate"]
+      - turn: 3
+        user_message: "Нужно ли держателю LTR визы соблюдать правило 4 тайских сотрудников на 1 иностранца?"
+        expected_legal_norms: ["LTR exemption", "BOI One Stop Service"]
+      - turn: 4
+        user_message: "Освобождаются ли держатели LTR от уведомления о пребывании каждые 90 дней?"
+        expected_legal_norms: ["Annual report instead of 90-day report"]
+
+  # Scenario 15: Dispute resolution and TAI / THAC arbitration
+  - id: "TH_CONV_15"
+    type: "dispute_resolution"
+    topic: "arbitration_law"
+    turns:
+      - turn: 1
+        user_message: "Признаются ли решения иностранных арбитражных судов в Таиланде?"
+        expected_legal_norms: ["Arbitration Act B.E. 2545", "New York Convention 1958"]
+      - turn: 2
+        user_message: "В какой срок после вынесения иностранного решения нужно обратиться в тайский суд?"
+        expected_legal_norms: ["3 years", "Section 42"]
+      - turn: 3
+        user_message: "По каким основаниям тайский суд может отказать в приведении в исполнение арбитражного решения?"
+        expected_legal_norms: ["Public policy", "Section 43", "San Deka"]
+      - turn: 4
+        user_message: "Какие ведущие арбитражные институты работают в Таиланде?"
+        expected_legal_norms: ["TAI (Thai Arbitration Institute)", "THAC (Thailand Arbitration Center)"]
+
+  # Scenario 16: Alien business work permit rules
+  - id: "TH_CONV_16"
+    type: "work_permit"
+    topic: "labor_law"
+    turns:
+      - turn: 1
+        user_message: "Какой минимальный уставный капитал компании требуется для получения 1 ворк пермита для иностранца?"
+        expected_legal_norms: ["2 million THB per work permit"]
+      - turn: 2
+        user_message: "Сколько тайских сотрудников должно быть официально трудоустроено на одного иностранца?"
+        expected_legal_norms: ["4 Thai employees per 1 foreigner"]
+      - turn: 3
+        user_message: "А если иностранец состоит в официальном браке с гражданином Таиланда?"
+        expected_legal_norms: ["1 million THB capital", "2 Thai employees"]
+      - turn: 4
+        user_message: "Какие профессии категорически запрещены для иностранцев в Королевском указе?"
+        expected_legal_norms: ["Royal Decree", "tour guide", "hairdresser", "legal counsel in Thai courts"]
+
+  # Scenario 17: Condominium common expenses and sinking fund
+  - id: "TH_CONV_17"
+    type: "condominium_management"
+    topic: "property_law"
+    turns:
+      - turn: 1
+        user_message: "Обязан ли собственник кондоминиума оплачивать Common Area Management Fee (CAM fee)?"
+        expected_legal_norms: ["Condominium Act Section 18"]
+      - turn: 2
+        user_message: "Какие штрафы юридическое лицо кондоминиума (Juristic Person) вправе начислить за просрочку платежа?"
+        expected_legal_norms: ["Section 18", "до 10-20% годовых"]
+      - turn: 3
+        user_message: "Вправе ли Juristic Person отключить подачу воды или доступ по ключ-картам за неуплату CAM fee?"
+        expected_legal_norms: ["Supreme Court San Deka precedent", "неправомерность отключения жизненно важных услуг"]
+      - turn: 4
+        user_message: "Может ли собственник продать квартиру без получения Debt-Free Certificate (справки об отсутствии задолженности)?"
+        expected_legal_norms: ["Section 29", "Land Department requirement"]
+
+  # Scenario 18: Hotel licensing for villas
+  - id: "TH_CONV_18"
+    type: "hotel_licensing"
+    topic: "regulatory_law"
+    turns:
+      - turn: 1
+        user_message: "Какие виллы освобождены от получения гостиничной лицензии по Hotel Act Ministerial Regulation 2023?"
+        expected_legal_norms: ["не более 8 номеров", "не более 30 гостей", "non-hotel notification"]
+      - turn: 2
+        user_message: "Куда подается уведомление о сдаче виллы до 8 номеров (non-hotel accommodation)?"
+        expected_legal_norms: ["Provincial Administration Department", "District Office"]
+      - turn: 3
+        user_message: "Какие требования пожарной безопасности обязательны для такой виллы?"
+        expected_legal_norms: ["огнетушители", "план эвакуации", "аварийное освещение"]
+      - turn: 4
+        user_message: "Какая уголовная ответственность установлена за работу отеля без лицензии по ст. 59 Hotel Act?"
+        expected_legal_norms: ["Section 59", "лишение свободы до 1 года", "штраф до 20 000 бат", "посуточный штраф"]
+
+  # Scenario 19: Thai tax residency rules
+  - id: "TH_CONV_19"
+    type: "tax_residency"
+    topic: "tax_law"
+    turns:
+      - turn: 1
+        user_message: "Как определяется налоговое резидентство физического лица в Таиланде?"
+        expected_legal_norms: ["Revenue Code Section 41", "180 days in a calendar year"]
+      - turn: 2
+        user_message: "Дни считаются непрерывно или суммарно в течение календарного года?"
+        expected_legal_norms: ["суммарно", "aggregate 180 days"]
+      - turn: 3
+        user_message: "Подлежат ли налогообложению в Таиланде доходы, полученные от источников внутри страны, для нерезидентов?"
+        expected_legal_norms: ["Section 41 Paragraph 1", "облагаются независимо от резидентства"]
+      - turn: 4
+        user_message: "Как работает зачет уплаченного за рубежом налога по Соглашению об избежании двойного налогообложения (DTA)?"
+        expected_legal_norms: ["DTA Tax Credit", "Certificate of Tax Residence (TRC)"]
+
+  # Scenario 20: Pre-nuptial spousal property separation
+  - id: "TH_CONV_20"
+    type: "family_property"
+    topic: "family_law"
+    turns:
+      - turn: 1
+        user_message: "Как по тайскому праву делится имущество супругов при разводе?"
+        expected_legal_norms: ["Civil and Commercial Code Section 1533", "Sin Somros 50/50"]
+      - turn: 2
+        user_message: "Что признается личной собственностью супруга (Sin Suan Tua)?"
+        expected_legal_norms: ["Section 1471", "имущество до брака", "наследство", "личные вещи"]
+      - turn: 3
+        user_message: "Считаются ли доходы от личного имущества (например, аренда квартиры, купленной до брака) общим имуществом?"
+        expected_legal_norms: ["Section 1474", "плоды личного имущества являются Sin Somros"]
+      - turn: 4
+        user_message: "Можно ли брачным договором изменить это правило и сохранить доходы как личные?"
+        expected_legal_norms: ["Section 1465", "Section 1466", "prenuptial agreement"]
+        expect_next_action: true

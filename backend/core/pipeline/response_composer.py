@@ -2,7 +2,7 @@
 backend/core/pipeline/response_composer.py
 Consultant+ Core Engine 2.0 — Multilingual Response Composer.
 Composes final client-facing ConsultantResponse DTO in user's response_language,
-with interactive statutory citations, precedents, and dynamic proactive follow-up questions.
+with interactive statutory citations, precedents, and strictly <= 1 high-yield follow-up question.
 """
 
 from typing import List, Dict, Any, Optional
@@ -56,24 +56,12 @@ class ResponseComposer:
                     "full_text": c.chunk_text
                 })
 
-        # 3. Dynamic Proactive Questions strictly in user's target language
+        # 3. Dynamic Proactive Question: STRICTLY AT MOST 1 HIGH-VALUE QUESTION
         followups: List[str] = []
-        target_q = reasoning_plan.next_high_yield_question_target_lang or reasoning_plan.next_high_yield_question
-        if target_q:
-            followups.append(target_q)
-
-        # Additional contextual follow-up in user's language
-        if reasoning_plan.applicable_options:
-            first_opt = reasoning_plan.applicable_options[0].get("option_title")
-            if first_opt:
-                if lang == "ru":
-                    doc_q = f"Какие документы требуются для оформления: {first_opt}?"
-                elif lang == "th":
-                    doc_q = f"เอกสารที่ต้องใช้ในการดำเนินการ: {first_opt} มีอะไรบ้าง?"
-                else:
-                    doc_q = f"What statutory documents are mandated to structure: {first_opt}?"
-                if doc_q not in followups:
-                    followups.append(doc_q)
+        if reasoning_plan.response_mode != ResponseMode.DIRECT_ANSWER:
+            target_q = reasoning_plan.next_high_yield_question_target_lang or reasoning_plan.next_high_yield_question
+            if target_q and len(target_q.strip()) > 5:
+                followups.append(target_q.strip())
 
         # 4. Sources
         sources = [
@@ -87,7 +75,7 @@ class ResponseComposer:
             lang=lang,
             statutory_references=stat_refs,
             precedents=precedents,
-            proactive_clarifications=followups[:3],
+            proactive_clarifications=followups[:1],  # STRICT CONTRACT: ask_question_count <= 1
             domain="REAL_ESTATE",
             mode=reasoning_plan.response_mode,
             trace_id=trace_id,

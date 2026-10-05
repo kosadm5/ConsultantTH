@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """
 telegram_poller.py
-Production Long-Polling Daemon for @ThaiLawBot (v6.0-PROD)
+Production Long-Polling Daemon for @ThaiLawBot (v6.1-PROD)
 Integrated with Consultant+ RAG Backend (Port 8100).
-- Resilient HTTP connection management with automatic session recreation on drops
+- Resilient HTTP connection management with dual session architecture:
+    * tg_session: routes via local HTTP proxy to api.telegram.org (bypasses ISP blocks)
+    * backend_session: directly reaches localhost:8100 without proxy
+- Dynamic live Cloudflare tunnel resolution via /opt/consultant/th_tunnel_url.txt
 - Chat Menu Button and persistent ReplyKeyboardMarkup for 100% WebApp launch reliability
 - Real-time language and profile synchronization with Web App & Postgres
 - Multi-session dialogue lifecycle (/new)
@@ -30,21 +33,51 @@ logger = logging.getLogger("telegram_bot")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8521415927:AAFOiPqP88Gp29qPTtyRBOwmFFJEsiL1AlE")
 API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8100")
-MINI_APP_URL = os.getenv("MINI_APP_URL", "https://experiments-september-drill-sand.trycloudflare.com")
+TG_PROXY = os.getenv("TG_PROXY", "http://89.127.212.225:3128")
+
+
+def get_mini_app_url() -> str:
+    """Dynamically resolves the active Cloudflare tunnel URL for Consultant+ TH."""
+    if os.path.exists("/opt/consultant/th_tunnel_url.txt"):
+        try:
+            with open("/opt/consultant/th_tunnel_url.txt") as f:
+                cand = f.read().strip()
+                if cand.startswith("http"):
+                    return cand
+        except Exception:
+            pass
+    return os.getenv("MINI_APP_URL", "https://tutorials-strongly-solve-highway.trycloudflare.com")
+
 
 user_clarifications: Dict[int, List[str]] = {}
 user_langs: Dict[str, str] = {}
 user_active_session: Dict[str, str] = {}
 
-def create_session() -> requests.Session:
+
+def create_tg_session() -> requests.Session:
     sess = requests.Session()
     retries = Retry(total=3, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504])
     adapter = HTTPAdapter(max_retries=retries, pool_connections=10, pool_maxsize=20)
     sess.mount('https://', adapter)
     sess.mount('http://', adapter)
+    if TG_PROXY:
+        sess.proxies = {'http': TG_PROXY, 'https': TG_PROXY}
     return sess
 
-http_session = create_session()
+
+def create_backend_session() -> requests.Session:
+    sess = requests.Session()
+    sess.trust_env = False  # NEVER route localhost backend calls through proxy
+    retries = Retry(total=2, backoff_factor=0.3, status_forcelist=[502, 503, 504])
+    adapter = HTTPAdapter(max_retries=retries, pool_connections=10, pool_maxsize=20)
+    sess.mount('http://', adapter)
+    sess.mount('https://', adapter)
+    return sess
+
+
+tg_session = create_tg_session()
+backend_session = create_backend_session()
+
 
 def normalize_id(user_id: Any) -> str:
     s = str(user_id).strip()
@@ -52,31 +85,26 @@ def normalize_id(user_id: Any) -> str:
         return f"tg_{s}"
     return s
 
+
 def call_tg(method: str, payload: Dict[str, Any] = None, timeout: int = 15) -> Dict[str, Any]:
-    global http_session
+    global tg_session
     url = f"{API_URL}/{method}"
     try:
-        resp = http_session.post(url, json=payload or {}, timeout=(5.0, float(timeout)))
+        resp = tg_session.post(url, json=payload or {}, timeout=(5.0, float(timeout)))
         if resp.status_code == 200:
             return resp.json()
         logger.error(f"Telegram API {method} error ({resp.status_code}): {resp.text}")
     except Exception as e:
         logger.error(f"Telegram call exception ({method}): {e}")
         try:
-            http_session.close()
+            tg_session.close()
         except Exception:
             pass
-        http_session = create_session()
+        tg_session = create_tg_session()
     return {}
 
-def clean_for_telegram(text: str) -> str:
-    """Strips HTML tags into clean text."""
-    text = re.sub(r"<a\s+[^>]*>(.*?)</a>", r"*\1*", text, flags=re.IGNORECASE)
-    text = re.sub(r"<[^>]+>", "", text)
-    return text
 
 def send_message(chat_id: int, text: str, reply_markup: Dict[str, Any] = None, parse_mode: str = "Markdown") -> Dict[str, Any]:
-    text = clean_for_telegram(text)
     if len(text) > 4000:
         text = text[:3950] + "\n\n... *(полный текст и статьи доступны в Web App)*"
     payload = {
@@ -93,15 +121,17 @@ def send_message(chat_id: int, text: str, reply_markup: Dict[str, Any] = None, p
         res = call_tg("sendMessage", payload)
     return res
 
+
 def send_chat_action(chat_id: int, action: str = "typing"):
     call_tg("sendChatAction", {"chat_id": chat_id, "action": action})
+
 
 def get_user_lang(user_id: str) -> str:
     nid = normalize_id(user_id)
     if nid in user_langs:
         return user_langs[nid]
     try:
-        resp = http_session.get(f"{BACKEND_URL}/api/user/{nid}/profile", timeout=(3.0, 5.0))
+        resp = backend_session.get(f"{BACKEND_URL}/api/user/{nid}/profile", timeout=(3.0, 5.0))
         if resp.status_code == 200:
             prof = resp.json().get("profile", {})
             l = prof.get("preferred_language", "en")
@@ -112,11 +142,12 @@ def get_user_lang(user_id: str) -> str:
         pass
     return "en"
 
+
 def sync_user_lang_to_backend(user_id: str, new_lang: str):
     nid = normalize_id(user_id)
     user_langs[nid] = new_lang
     try:
-        http_session.post(
+        backend_session.post(
             f"{BACKEND_URL}/api/user/profile",
             json={"user_id": nid, "preferred_language": new_lang, "user_role": "client"},
             timeout=(3.0, 5.0)
@@ -125,26 +156,31 @@ def sync_user_lang_to_backend(user_id: str, new_lang: str):
     except Exception as e:
         logger.warning(f"Failed to sync language to backend: {e}")
 
+
 def get_or_create_user_session(user_id: str) -> str:
     nid = normalize_id(user_id)
     if nid not in user_active_session:
         user_active_session[nid] = f"sess_{nid}_{int(time.time())}"
     return user_active_session[nid]
 
+
 def reset_user_session(user_id: str) -> str:
     nid = normalize_id(user_id)
     new_sess = f"sess_{nid}_{int(time.time())}"
     user_active_session[nid] = new_sess
+    logger.info(f"Initialized new consultation session for {nid}: {new_sess}")
     return new_sess
 
+
 def get_persistent_reply_keyboard(lang: str = "en") -> Dict[str, Any]:
+    current_url = get_mini_app_url()
     open_btn = {
-        "ru": "📱 Открыть Consultant+",
-        "en": "📱 Open Consultant+",
-        "th": "📱 เปิด Consultant+",
-        "zh": "📱 打开 Consultant+"
-    }.get(lang, "📱 Открыть Consultant+")
-    
+        "ru": "📱 Открыть Consultant+ Mini App",
+        "en": "📱 Open Consultant+ Mini App",
+        "th": "📱 เปิด Consultant+ Mini App",
+        "zh": "📱 打开 Consultant+ Mini App"
+    }.get(lang, "📱 Открыть Consultant+ Mini App")
+
     calc_btn = {
         "ru": "⚡ Экспресс-калькулятор",
         "en": "⚡ Legal Calculator",
@@ -161,16 +197,17 @@ def get_persistent_reply_keyboard(lang: str = "en") -> Dict[str, Any]:
 
     return {
         "keyboard": [
-            [{"text": open_btn, "web_app": {"url": MINI_APP_URL}}],
-            [{"text": calc_btn, "web_app": {"url": f"{MINI_APP_URL}#calculator"}}, {"text": new_btn}]
+            [{"text": open_btn, "web_app": {"url": current_url}}],
+            [{"text": calc_btn, "web_app": {"url": f"{current_url}#calculator"}}, {"text": new_btn}]
         ],
         "resize_keyboard": True,
         "is_persistent": True
     }
 
+
 def build_clarification_keyboard(clarifications: List[str], lang: str = "en") -> Dict[str, Any]:
+    current_url = get_mini_app_url()
     buttons = []
-    # Up to 2 sharp contextual follow-up questions
     for i, q in enumerate(clarifications[:2]):
         short_text = f"💡 {q[:42]}..." if len(q) > 45 else f"💡 {q}"
         buttons.append([{"text": short_text, "callback_data": f"clarify_{i}"}])
@@ -189,16 +226,17 @@ def build_clarification_keyboard(clarifications: List[str], lang: str = "en") ->
         "zh": "📱 打开 Consultant+"
     }.get(lang, "📱 Открыть Consultant+")
 
-    # Single sleek bottom row
     bottom_row = [
-        {"text": app_btn_text, "web_app": {"url": MINI_APP_URL}},
+        {"text": app_btn_text, "web_app": {"url": current_url}},
         {"text": new_dialog_labels.get(lang, "➕ Новый диалог"), "callback_data": "cmd_new_dialog"}
     ]
     buttons.append(bottom_row)
     return {"inline_keyboard": buttons}
 
+
 def handle_start(chat_id: int, user_id: str, first_name: str):
     lang = get_user_lang(user_id)
+    current_url = get_mini_app_url()
     
     # 1. Update Chat Menu Button directly for this user chat
     call_tg("setChatMenuButton", {
@@ -206,7 +244,7 @@ def handle_start(chat_id: int, user_id: str, first_name: str):
         "menu_button": {
             "type": "web_app",
             "text": "📱 Consultant+",
-            "web_app": {"url": MINI_APP_URL}
+            "web_app": {"url": current_url}
         }
     })
     
@@ -219,52 +257,52 @@ def handle_start(chat_id: int, user_id: str, first_name: str):
             "Задай любой вопрос прямо сюда или запусти Web App для комфортной работы со статьями законов, калькуляторами и кодексами!"
         ),
         "en": (
-            f"👋 **Hello, {first_name}!**\n\n"
-            "I'm your practical legal advisor in Thailand — **Consultant+** 🏛️\n\n"
-            "I translate complex Thai statutes into plain, actionable roadmaps, uncover legal loopholes, "
-            "and protect you from costly pitfalls in real estate, taxation, and corporate setup.\n\n"
-            "Ask me anything here, or launch the Web App for full-text statute viewing, calculators, and legal tools!"
+            f"👋 **Welcome, {first_name}!**\n\n"
+            "I am your official AI legal advisor for the Kingdom of Thailand — **Consultant+** 🏛️\n\n"
+            "I deliver verified legal reasoning, calculate precise tax/closing figures, and protect your investments "
+            "across Real Estate, Corporate structuring (51/49 FBA), Labor disputes, and Tax compliance.\n\n"
+            "Type your legal question directly or launch our interactive Web App below!"
         ),
         "th": (
             f"👋 **สวัสดีครับ คุณ {first_name}!**\n\n"
-            "ผมคือที่ปรึกษากฎหมายส่วนตัวของคุณ — **Consultant+** 🏛️\n\n"
-            "อธิบายกฎหมายไทยให้เข้าใจง่าย ชัดเจน วางแผนการดำเนินการทีละขั้นตอน "
-            "พร้อมชี้ช่องทางที่ถูกต้องตามกฎหมายและป้องกันความเสี่ยงด้านอสังหาริมทรัพย์ ภาษี และธุรกิจ\n\n"
-            "พิมพ์คำถามของคุณได้ทันที หรือเปิดใช้งาน Web App เพื่อดูตัวบทกฎหมายและเครื่องคำนวณฉบับเต็มได้เลยครับ!"
+            "ผมคือที่ปรึกษากฎหมายปัญญาประดิษฐ์ทางการของคุณ — **Consultant+** 🏛️\n\n"
+            "พร้อมให้คำปรึกษาทางกฎหมายไทยอย่างถูกต้อง แม่นยำ อ้างอิงมาตรากฎหมายล่าสุด "
+            "ทั้งด้านอสังหาริมทรัพย์, การประกอบธุรกิจของคนต่างด้าว, กฎหมายแรงงาน และภาษีอากร\n\n"
+            "พิมพ์คำถามหรือเปิดแอปเพื่อใช้งานเครื่องคำนวณและค้นหาข้อกฎหมายได้ทันทีครับ"
         ),
         "zh": (
             f"👋 **您好，{first_name}！**\n\n"
-            "我是您的泰国法务私人顾问 — **Consultant+** 🏛️\n\n"
-            "用最通俗易懂的语言为您剖析泰王国法律，量身定制实操步骤，"
-            "指引合规捷径并规避房产、税务和公司经营中的法律陷阱。\n\n"
-            "您可以直接提问，或开启专属 Web App 查看完整王家宪报法规原文与快捷计算工具！"
+            "我是您的泰国官方AI法务法律顾问 — **Consultant+** 🏛️\n\n"
+            "依据泰王国最新现行法典，为您在外籍房产持有（49%永久产权/30年租赁）、外资合资企业合规（FBA代持风险）、"
+            "个人境外所得税（RD P.161/162号令）及劳工争议中提供最严密精准的法律护航与行动方案。\n\n"
+            "您可以直接输入问题，或点击下方启动交互式法务小程序！"
         )
     }
-
-    text = welcomes.get(lang, welcomes["ru"])
     
     app_btn_label = {
-        "ru": "📱 Открыть Consultant+",
-        "en": "📱 Open Consultant+",
-        "th": "📱 เปิด Consultant+",
-        "zh": "📱 打开 Consultant+"
-    }.get(lang, "📱 Открыть Consultant+")
+        "ru": "⚖️ Открыть Consultant+ Mini App",
+        "en": "⚖️ Open Consultant+ Mini App",
+        "th": "⚖️ เปิด Consultant+ Mini App",
+        "zh": "⚖️ 打开 Consultant+ Mini App"
+    }.get(lang, "⚖️ Открыть Consultant+ Mini App")
 
+    text = welcomes.get(lang, welcomes["en"])
+    
     quick_btns = {
         "ru": [
-            [{"text": "🏢 Квартиры (Freehold & FET)", "callback_data": "quick_condo"}, {"text": "🏡 Земля и виллы (Leasehold 30)", "callback_data": "quick_villa"}],
-            [{"text": "💰 Налог на ввоз денег (P.161)", "callback_data": "quick_tax"}, {"text": "💼 Бизнес и компания 51/49", "callback_data": "quick_fba"}],
-            [{"text": "⚖️ Выходное пособие (ст. 118)", "callback_data": "quick_labor"}, {"text": "🛂 Визы и Work Permit", "callback_data": "quick_visa"}]
+            [{"text": "🏢 Кондоминиум (49% Freehold)", "callback_data": "quick_condo"}, {"text": "🏡 Вилла и земля (30 лет Leasehold)", "callback_data": "quick_villa"}],
+            [{"text": "💰 Налог на доход из-за границы (P.161)", "callback_data": "quick_tax"}, {"text": "💼 Компания 51/49 и риски Nominee", "callback_data": "quick_fba"}],
+            [{"text": "⚖️ Выходное пособие (ст. 118 LPA)", "callback_data": "quick_labor"}, {"text": "🛂 Work Permit и виза LTR", "callback_data": "quick_visa"}]
         ],
         "en": [
-            [{"text": "🏢 Condo (49% Freehold)", "callback_data": "quick_condo"}, {"text": "🏡 Land & Villa (30-Yr Lease)", "callback_data": "quick_villa"}],
-            [{"text": "💰 Tax Remittance (P.161)", "callback_data": "quick_tax"}, {"text": "💼 Business & Nominee (FBA)", "callback_data": "quick_fba"}],
-            [{"text": "⚖️ Labor & Severance (LPA 118)", "callback_data": "quick_labor"}, {"text": "🛂 Visas & Work Permit", "callback_data": "quick_visa"}]
+            [{"text": "🏢 Condo (49% Foreign Freehold)", "callback_data": "quick_condo"}, {"text": "🏡 Villa & Land (30-yr Leasehold)", "callback_data": "quick_villa"}],
+            [{"text": "💰 Foreign Remittance Tax (P.161/162)", "callback_data": "quick_tax"}, {"text": "💼 51/49 Company & Nominee Risks", "callback_data": "quick_fba"}],
+            [{"text": "⚖️ LPA Sec 118 Severance Scales", "callback_data": "quick_labor"}, {"text": "🛂 Digital Work Permit & LTR Visa", "callback_data": "quick_visa"}]
         ],
         "th": [
-            [{"text": "🏢 ห้องชุด (โควตา 49% Freehold)", "callback_data": "quick_condo"}, {"text": "🏡 ที่ดินและวิลล่า (Leasehold 30 ปี)", "callback_data": "quick_villa"}],
-            [{"text": "💰 ภาษีเงินได้ต่างประเทศ (ป.161)", "callback_data": "quick_tax"}, {"text": "💼 บริษัทและความเสี่ยง Nominee", "callback_data": "quick_fba"}],
-            [{"text": "⚖️ ค่าชดเชยการเลิกจ้าง (ม.118)", "callback_data": "quick_labor"}, {"text": "🛂 วีซ่าและ Work Permit", "callback_data": "quick_visa"}]
+            [{"text": "🏢 โควตาต่างชาติตาม พ.ร.บ.อาคารชุด", "callback_data": "quick_condo"}, {"text": "🏡 สิทธิการเช่าที่ดิน 30 ปี (Leasehold)", "callback_data": "quick_villa"}],
+            [{"text": "💰 ภาษีเงินได้นำเข้าตามคำสั่ง ป.161", "callback_data": "quick_tax"}, {"text": "💼 บ.ร่วมทุน 51/49 และโทษนอมินี", "callback_data": "quick_fba"}],
+            [{"text": "⚖️ อัตราค่าชดเชยเลิกจ้าง ม.118", "callback_data": "quick_labor"}, {"text": "🛂 เงื่อนไข Work Permit และ LTR", "callback_data": "quick_visa"}]
         ],
         "zh": [
             [{"text": "🏢 公寓大厦（49%永久产权）", "callback_data": "quick_condo"}, {"text": "🏡 土地与别墅（30年租赁权）", "callback_data": "quick_villa"}],
@@ -275,7 +313,7 @@ def handle_start(chat_id: int, user_id: str, first_name: str):
 
     keyboard = {
         "inline_keyboard": [
-            [{"text": app_btn_label, "web_app": {"url": MINI_APP_URL}}],
+            [{"text": app_btn_label, "web_app": {"url": current_url}}],
             [
                 {"text": "🇬🇧 English", "callback_data": "set_lang_en"},
                 {"text": "🇹🇭 ภาษาไทย", "callback_data": "set_lang_th"},
@@ -287,7 +325,6 @@ def handle_start(chat_id: int, user_id: str, first_name: str):
     }
     send_message(chat_id, text, reply_markup=keyboard)
     
-    # 2. Also send/activate persistent bottom reply keyboard
     quick_bar_text = {
         "ru": "⚡ *Быстрый доступ закреплен в нижней панели и меню слева ⬇️*",
         "en": "⚡ *Quick access is pinned to your keyboard bar & menu below ⬇️*",
@@ -297,9 +334,10 @@ def handle_start(chat_id: int, user_id: str, first_name: str):
     
     send_message(chat_id, quick_bar_text, reply_markup=get_persistent_reply_keyboard(lang))
 
+
 def query_rag_backend(query: str, user_id: str, session_id: str, lang: str = "en") -> Dict[str, Any]:
     try:
-        resp = http_session.post(
+        resp = backend_session.post(
             f"{BACKEND_URL}/api/chat",
             json={
                 "user_id": user_id,
@@ -309,7 +347,7 @@ def query_rag_backend(query: str, user_id: str, session_id: str, lang: str = "en
                 "jurisdiction": "Thailand",
                 "session_id": session_id
             },
-            timeout=(5.0, 35.0)
+            timeout=(5.0, 60.0)
         )
         if resp.status_code == 200:
             return resp.json()
@@ -318,64 +356,66 @@ def query_rag_backend(query: str, user_id: str, session_id: str, lang: str = "en
         logger.error(f"Error querying backend: {e}")
     return {}
 
+
 def process_query_and_reply(chat_id: int, user_id: str, query_text: str, first_name: str):
     send_chat_action(chat_id, "typing")
     
     nid = normalize_id(user_id)
     lang = get_user_lang(nid)
     session_id = get_or_create_user_session(nid)
-
-    data = query_rag_backend(query_text, user_id=nid, session_id=session_id, lang=lang)
-    if not data:
+    
+    logger.info(f"Processing query from {first_name} ({nid}, lang={lang}, sess={session_id}): {query_text[:60]}")
+    
+    result = query_rag_backend(query_text, nid, session_id, lang)
+    if not result:
         err_msg = {
-            "en": "⚠️ The legal consultation engine is momentarily syncing updates. Please retry in one minute.",
-            "th": "⚠️ ระบบกำลังประมวลผลการอัปเดตข้อมูลกฎหมาย กรุณาลองใหม่อีกครั้งใน 1 นาทีครับ",
-            "ru": "⚠️ Сервер консультаций временно обрабатывает обновление базы. Пожалуйста, повторите запрос через минуту.",
-            "zh": "⚠️ 法律咨询引擎正在同步最新法规数据，请稍候一分钟后重试。"
-        }.get(lang, "⚠️ Сервер консультаций временно обрабатывает обновление базы. Пожалуйста, повторите запрос через минуту.")
+            "ru": "⚠️ Извините, правовой сервер временно обрабатывает большой объем запросов. Пожалуйста, повторите вопрос через несколько секунд.",
+            "en": "⚠️ Legal backend is momentarily under heavy workload. Please retry your question in a few moments.",
+            "th": "⚠️ ขออภัยครับ ระบบประมวลผลกฎหมายกำลังมีผู้ใช้งานจำนวนมาก กรุณาลองใหม่อีกครั้งในอีกสักครู่ครับ",
+            "zh": "⚠️ 抱歉，法务云端正在高负荷处理咨询，请稍候数秒后重试您的提问。"
+        }.get(lang, "⚠️ Please retry in a few moments.")
         send_message(chat_id, err_msg)
         return
         
-    answer = data.get("answer", "")
-    clarifications = data.get("proactive_clarifications", [])
-    user_clarifications[chat_id] = clarifications
-    resp_lang = data.get("lang", lang or "en")
-    user_langs[nid] = resp_lang
-
-    # Highlight related past case if present
-    related = data.get("related_case")
-    if related:
-        hint_text = related.get("hint") or ""
-        past_title = related.get("title") or ""
-        prefix = f"💡 **Смежный кейс из вашего прошлого диалога «{past_title}»:**\n_{hint_text}_\n\n---\n\n"
-        answer = prefix + answer
+    answer = result.get("response") or result.get("answer") or ""
+    resp_lang = result.get("detected_lang", lang)
+    if resp_lang in ["ru", "en", "th", "zh"] and resp_lang != lang:
+        sync_user_lang_to_backend(user_id, resp_lang)
     
-    # Append clean statute titles if present
-    statutes = data.get("statutory_references", [])
+    statutes = result.get("statutes", [])
+    clarifications = result.get("clarifications", [])
+    user_clarifications[chat_id] = clarifications
+    
     if statutes:
-        header = {
-            "ru": "\n\n📜 **Нормативно-правовая база:**\n",
-            "en": "\n\n📜 **Governing Statutory Provisions:**\n",
-            "th": "\n\n📜 **บทบัญญัติกฎหมายที่เกี่ยวข้อง:**\n",
-            "zh": "\n\n📜 **核心法规依据：**\n"
-        }.get(resp_lang, "\n\n📜 **Нормативно-правовая база:**\n")
-        
         statute_lines = []
         for s in statutes[:3]:
-            title = s.get("title") or ""
-            sec = s.get("section_num") or ""
-            if title:
-                statute_lines.append(f"• **{title}**" + (f" — _{sec}_" if sec else ""))
+            sec = s.get("section") or s.get("title") or ""
+            act = s.get("act_name") or s.get("law_name") or ""
+            txt = (s.get("content") or s.get("text") or "").strip()
+            summary = s.get("summary") or (txt[:120] + "..." if len(txt) > 120 else txt)
+            if sec and act:
+                statute_lines.append(f"• **{sec}** ({act}): _{summary}_")
+            elif sec:
+                statute_lines.append(f"• **{sec}**: _{summary}_")
+                
         if statute_lines:
+            header = {
+                "ru": "\n\n📚 **Правовые основания (НПА Таиланда):**\n",
+                "en": "\n\n📚 **Statutory Citations & Legal Basis:**\n",
+                "th": "\n\n📚 **บทบัญญัติแห่งกฎหมายที่เกี่ยวข้อง:**\n",
+                "zh": "\n\n📚 **泰王国法定条文及裁量依据：**\n"
+            }.get(resp_lang, "\n\n📚 **Statutory Citations:**\n")
             answer += header + "\n".join(statute_lines)
     
     keyboard = build_clarification_keyboard(clarifications, lang=resp_lang)
     send_message(chat_id, answer, reply_markup=keyboard)
 
+
 def main():
-    logger.info("Starting Telegram Poller v6.0-PROD for @ThaiLawBot with resilient session pooling...")
+    logger.info("Starting Telegram Poller v6.1-PROD for @ThaiLawBot with dual session & dynamic tunnels...")
     logger.info(f"Connected to backend at: {BACKEND_URL}")
-    logger.info(f"Mini App URL set to: {MINI_APP_URL}")
+    current_url = get_mini_app_url()
+    logger.info(f"Mini App URL set to: {current_url}")
     
     call_tg("deleteWebhook")
     
@@ -383,8 +423,8 @@ def main():
     call_tg("setChatMenuButton", {
         "menu_button": {
             "type": "web_app",
-            "text": "📱 Consultant+",
-            "web_app": {"url": MINI_APP_URL}
+            "text": "Consultant+ TH",
+            "web_app": {"url": current_url}
         }
     })
     
@@ -421,7 +461,7 @@ def main():
                     logger.info(f"Received message from {first_name} ({user_id}): {text[:50]}")
                     clean_lower = text.lower().strip()
                     
-                    if clean_lower in ["/start", "/help", "start", "старт", "помощь"]:
+                    if clean_lower in ["/start", "/help", "start", "старт", "помощь", "/app"]:
                         handle_start(chat_id, user_id, first_name)
                     elif clean_lower in ["/calc", "/calculator", "калькулятор", "⚡ калькулятор", "⚡ экспресс-калькулятор", "calculator"]:
                         lang = get_user_lang(user_id)
@@ -431,7 +471,7 @@ def main():
                         }.get(lang, "⚡ **Экспресс-калькулятор сделок и налогов Таиланда**\n\nНажмите кнопку ниже для запуска:")
                         calc_kb = {
                             "inline_keyboard": [
-                                [{"text": "⚡ Открыть калькулятор", "web_app": {"url": MINI_APP_URL + "#calculator"}}]
+                                [{"text": "⚡ Открыть калькулятор", "web_app": {"url": get_mini_app_url() + "#calculator"}}]
                             ]
                         }
                         send_message(chat_id, calc_msg, reply_markup=calc_kb)
@@ -516,7 +556,7 @@ def main():
                             "quick_villa": "คนต่างด้าวจะจดทะเบียนสิทธิการเช่าระยะยาว 30 ปี (Leasehold) สำหรับที่ดินและวิลล่าได้อย่างไร?",
                             "quick_tax": "เงินได้จากต่างประเทศที่นำเข้ามาในไทยต้องเสียภาษีเงินได้บุคคลธรรมดาตามคำสั่ง ป.161 และ ป.162 หรือไม่?",
                             "quick_fba": "หลักเกณฑ์และโทษทางอาญาเกี่ยวกับการใช้ตัวแทนถือหุ้นแทน (Nominee) ตาม พ.ร.บ.การประกอบธุรกิจของคนต่างด้าว มาตรา 36 มีอะไรบ้าง?",
-                            "quick_labor": "อัตราค่าชดเชยการเลิกจ้างตามอายุงานตามมาตรา 118 แห่ง พ.ร.บ.คุ้มครองแรงงาน มีเกณฑ์อย่างไร?",
+                            "quick_labor": "อัตราค่าชдเชยการเลิกจ้างตามอายุงานตามมาตรา 118 แห่ง พ.ร.บ.คุ้มครองแรงงาน มีเกณฑ์อย่างไร?",
                             "quick_visa": "เงื่อนไขการขอใบอนุญาตทำงาน Work Permit และสิทธิประโยชน์ของวีซ่า LTR 10 ปี มีอะไรบ้าง?"
                         },
                         "ru": {
@@ -554,6 +594,7 @@ def main():
         except Exception as e:
             logger.error(f"Polling loop error: {e}")
             time.sleep(2)
+
 
 if __name__ == "__main__":
     main()
